@@ -223,7 +223,7 @@ function airray_from_camera(x, y, theta, cameraind)::Ray
     n = R_IC * [u, v, 1] ./ norm
     # center of camera and point on ray
     p = theta.cameraposes[cameraind, 4:6]
-    return Ray(n, p)
+    return Ray{eltype(n)}(n, p)
 end
 
 # returns the point at which the ray and the interface (plane) intersect
@@ -415,11 +415,10 @@ function detect_and_intersect()
 
     charuco_detector, _ = create_charuco_detector_and_board()
 
-
     detections_list = []
     intersections_list = []
-    # for concurrent_framenames in zip(filenames...)
-    for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
+    for concurrent_framenames in zip(filenames...)
+    # for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
         # framenames: ("Camera 10029.tif", "Camera 20029.tif", "Camera30029.tif", "Camera 40029.tif")
 
         # TODO check if indices are the same!
@@ -451,16 +450,17 @@ end
 
 function residuals(free_parameters, p)
     theta = merge_free_and_fixed_parameters(free_parameters, p.fixed_parameters)
+    T = eltype(free_parameters)
 
     nair = 1.0 # indices of refraction
     nwater = 1.33
 
-    residuals = []
+    residuals = T[]
     for (detections, intersections) in zip(p.detections_list, p.intersections_list)
         for (pairingindex, intersected_ids) in enumerate(intersections)
             cameraindA, cameraindB = pairings[pairingindex]
-            interfaceA = cameraindA < 3 ? Interface(theta.interfaces[1].n / norm(theta.interfaces[1].n), theta.interfaces[1].d) : Interface(theta.interfaces[2].n / norm(theta.interfaces[2].n), theta.interfaces[2].d)
-            interfaceB = cameraindB < 3 ? Interface(theta.interfaces[1].n / norm(theta.interfaces[1].n), theta.interfaces[1].d) : Interface(theta.interfaces[2].n / norm(theta.interfaces[2].n), theta.interfaces[2].d)
+            interfaceA = cameraindA < 3 ? Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface12.n / norm(theta.interfaces.interface12.n), theta.interfaces.interface12.d) : Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface34.n / norm(theta.interfaces.interface34.n), theta.interfaces.interface34.d)
+            interfaceB = cameraindB < 3 ? Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface12.n / norm(theta.interfaces.interface12.n), theta.interfaces.interface12.d) : Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface34.n / norm(theta.interfaces.interface34.n), theta.interfaces.interface34.d)
 
             for id in intersected_ids
                 detectionindexA = searchsortedfirst(
@@ -470,8 +470,8 @@ function residuals(free_parameters, p)
                     detections[cameraindB].ids, id
                 )
 
-                pointA = detections[cameraindA].corners[detectionindexA]
-                pointB = detections[cameraindB].corners[detectionindexB]
+                pointA = detections[cameraindA].corners[detectionindexA, :]
+                pointB = detections[cameraindB].corners[detectionindexB, :]
 
                 rayA = airray_from_camera(pointA..., theta, cameraindA)
                 rayB = airray_from_camera(pointB..., theta, cameraindB)
@@ -485,13 +485,13 @@ function residuals(free_parameters, p)
     end
 
     # --- ridge / prior terms on all free quantities ---
-    position_priors = []
+    position_priors = T[]
     for i in 1:size(free_parameters.cameraposes, 1)
         Δ = free_parameters.cameraposes[i, 4:6] .- p.prior.cameraposes[i, 4:6]
         append!(position_priors, Δ ./ p.sigma_position)
     end
 
-    distortion_ridge = []
+    distortion_ridge = T[]
     for cp in free_parameters.cameraparameters
         for k in (cp.k1, cp.k2, cp.p1, cp.p2, cp.k3)
             push!(distortion_ridge, k / p.sigma_distortion)
@@ -520,7 +520,7 @@ function main()
     free_parameters, fixed_parameters = initial_guess()
 
     p = (
-        fixed=fixed_parameters,
+        fixed_parameters=fixed_parameters,
         detections_list=detections_list,
         intersections_list=intersections_list,
         prior=free_parameters,       # reference for position priors
@@ -528,7 +528,10 @@ function main()
         sigma_distortion=0.05,       # ridge strength
     )
 
-    nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
+    resid0 = residuals(free_parameters, p)          # concrete Vector{Float64}, also a sanity check it runs
+    @assert eltype(resid0) === Float64               # catches type instability early    nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
+
+    nlfun = NonlinearFunction(residuals; resid_prototype = resid0)
     prob = NonlinearLeastSquaresProblem(nlfun, free_parameters, p)
     sol = solve(prob, LevenbergMarquardt(; autodiff=AutoForwardDiff()))
 
