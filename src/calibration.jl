@@ -13,8 +13,22 @@ using StaticArrays
 using Optimization
 using Rotations
 
+# (1, 2) (1, 3) (1, 4) (2, 3) (2, 4) (3, 4)
+const pairings = [(i, j) for i in 1:4 for j in i+1:4]
+
 const cv2 = pyimport("cv2")
 const np = pyimport("numpy")
+
+# datastructure that holds a ray in 3d space
+struct Ray{T}
+    n::SVector{3,T}
+    p::SVector{3,T}
+end
+
+struct Interface{T}
+    n::SVector{3,T}
+    d::T # d = dot(-p,n), where p is a point on the plane. note the minus!
+end
 
 # img = Images.load("../calib/Camera30001.tif")
 
@@ -25,30 +39,25 @@ function initial_guess()
     R_Id = @SMatrix [
         0 0 1;
         0 -1 0;
-        1 0 0;
+        1 0 0
     ]
-    axis = [1; 0; 0];
+    axis = [1; 0; 0]
     R_d1 = AngleAxis(-28.31 |> deg2rad, axis...)
-    R_d2 = AngleAxis( 31.87 |> deg2rad, axis...)
-    R_d3 = AngleAxis( 56.00 |> deg2rad, axis...)
-    R_d4 = AngleAxis( 124.8 |> deg2rad, axis...)
+    R_d2 = AngleAxis(31.87 |> deg2rad, axis...)
+    R_d3 = AngleAxis(56.00 |> deg2rad, axis...)
+    R_d4 = AngleAxis(124.8 |> deg2rad, axis...)
     R_I1 = MRP(R_Id * R_d1)
     R_I2 = MRP(R_Id * R_d2)
     R_I3 = MRP(R_Id * R_d3)
     R_I4 = MRP(R_Id * R_d4)
 
-    camera1pose = [R_I1.x R_I1.y R_I1.z -0.776121  0.385141 0];
+    camera1pose = @SMatrix[R_I1.x R_I1.y R_I1.z -0.776121 0.385141 0]
     camera2to4poses = @SMatrix[
         R_I2.x R_I2.y R_I2.z -0.717733 -0.391225 0;
         R_I3.x R_I3.y R_I3.z -0.445777 -0.763216 0;
-        R_I4.x R_I4.y R_I4.z  0.423439 -0.715978 0;
+        R_I4.x R_I4.y R_I4.z 0.423439 -0.715978 0
     ]
-    defaultcameraparameters = (
-        fx=100.0,
-        fy=100.0,
-        cx=1280.0, # cx and cy are the pixel coordinates
-        cy=800.0,  # of the image part, without the bottom
-                            # info row
+    defaultcameraparameters_free = (
         # skew = 0.0,
 
         k1=0.0,
@@ -57,19 +66,31 @@ function initial_guess()
         p2=0.0,
         k3=0.0,
     )
-    cameraparameters = [defaultcameraparameters for _ in 1:4]
+
+    pixel_size = 10e-6 # 10micrometers
+    lens_focal_length = 100e-3
+    defaultcameraparameters_fixed = (
+        fx=lens_focal_length / pixel_size,
+        fy=lens_focal_length / pixel_size,
+        cx=1280.0, # cx and cy are the pixel coordinates
+        cy=800.0,  # of the image part, without the bottom
+        # info row
+    )
+    cameraparameters_free = [defaultcameraparameters_free for _ in 1:4]
+    cameraparameters_fixed = [defaultcameraparameters_fixed for _ in 1:4]
 
     interfaces = (
-        interface12=(n=[-1, 0, 0], p=-0.53/2),
-        interface34=(n=[0, -1, 0], p=-0.53/2)
+        interface12=(n=[-1, 0, 0], d=-0.53 / 2),
+        interface34=(n=[0, -1, 0], d=-0.53 / 2)
     )
     free_parameters = ComponentArray(
         cameraposes=camera2to4poses,
-        cameraparameters=cameraparameters,
+        cameraparameters=cameraparameters_free,
         interfaces=interfaces,
     )
     fixed_parameters = ComponentArray(
-        camera1pose = camera1pose
+        cameraposes=camera1pose,
+        cameraparameters=cameraparameters_fixed,
     )
 
     return free_parameters, fixed_parameters
@@ -79,26 +100,29 @@ end
 # whenever parameters are switched between fixed <=> free, the theta reconstruction must
 # be given as well.
 function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
+    cameraparameters = [
+        (
+            k1=free_parameters.cameraparameters[i].k1,
+            k2=free_parameters.cameraparameters[i].k2,
+            p1=free_parameters.cameraparameters[i].p1,
+            p2=free_parameters.cameraparameters[i].p2,
+            k3=free_parameters.cameraparameters[i].k3,
+            fx=fixed_parameters.cameraparameters[i].fx,
+            fy=fixed_parameters.cameraparameters[i].fy,
+            cx=fixed_parameters.cameraparameters[i].cx,
+            cy=fixed_parameters.cameraparameters[i].cy,
+        )
+        for i = 1:4
+    ]
     theta = ComponentArray(
-        cameraposes = vcat(fixed_parameters.camera1pose, free_parameters.cameraposes),
-        cameraparameters = free_parameters.cameraparameters,
+        cameraposes=vcat(fixed_parameters.cameraposes, free_parameters.cameraposes),
+        cameraparameters=cameraparameters,
         interfaces=free_parameters.interfaces
     )
     return theta
 end
-    
 
 
-# datastructure that holds a ray in 3d space
-struct Ray
-    n::SVector{3,Float64}
-    p::SVector{3,Float64}
-end
-
-struct Interface
-    n::SVector{3,Float64}
-    d::Float64 # d = dot(-p,n), where p is a point on the plane. note the minus!
-end
 
 
 # 2. water ray function
@@ -191,26 +215,26 @@ function airray_from_camera(x, y, theta, cameraind)::Ray
     u, v = undistort_point(u, v, cameraparameters)
 
     # Rotation matrix rotating from camera frame to inertial frame
-    R_IC = MRP(theta.cameraposes[cameraind, 1:3])
+    R_IC = MRP(theta.cameraposes[cameraind, 1:3]...)
 
     # the norm of the normal vector
     norm = sqrt(u^2 + v^2 + 1)
     # normal vector
-    n = R_IC*[u, v, 1]./norm
+    n = R_IC * [u, v, 1] ./ norm
     # center of camera and point on ray
     p = theta.cameraposes[cameraind, 4:6]
     return Ray(n, p)
 end
 
 # returns the point at which the ray and the interface (plane) intersect
-function intersect_ray_with_interface(ray::Ray, interface::Interface)::SVector{3, Float64}
+function intersect_ray_with_interface(ray::Ray, interface::Interface)
     denom = dot(interface.n, ray.n) # TODO check for zero breaks AD?
-    lambda::Float64 = -(dot(interface.n, ray.p) + interface.d) / denom
-    return ray.p + lambda*ray.n
+    lambda = -(dot(interface.n, ray.p) + interface.d) / denom
+    return ray.p + lambda * ray.n
 end
 
 # the interface normal must point to the side where the light is coming from!!
-function refract_ray(ray, interface, n1, n2)
+function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)
     # apply Snellius' Law
     cosalpha = -dot(interface.n, ray.n)
     @assert(cosalpha > 0)
@@ -225,7 +249,7 @@ function refract_ray(ray, interface, n1, n2)
 end
 
 function testrefraction()
-        interface = Interface([0.0; 1.0; 0.0], -1.1)
+    interface = Interface([0.0; 1.0; 0.0], -1.1)
     ray = Ray([1; -1; 0] ./ sqrt(2), [-2, 2, 0]')
     refractedray = refract_ray(ray, interface, 0.9, 1)
 
@@ -235,7 +259,7 @@ function testrefraction()
     println("refracted ray: $refractedray")
 end
 
-function distancesquared(ray1::Ray, ray2::Ray)::Float64
+function distancesquared(ray1::Ray, ray2::Ray)
     normal = cross(ray1.n, ray2.n)
     return dot(ray1.p - ray2.p, normal)^2 / (dot(normal, normal))
 end
@@ -256,7 +280,9 @@ function create_charuco_detector_and_board()
     return charuco_detector, board
 end
 
-function calibrate_naively(charuco_detector)
+# this function really does not work! the refraction is wayyy to great, and
+# cv2.calibrateCamera returns too great focal lengths
+function calibrate_naively(charuco_detector, charuco_board)
     # img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # kernel = np.ones((6,6), np.uint8)
@@ -264,19 +290,45 @@ function calibrate_naively(charuco_detector)
     # closed = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
 
     # charuco_corners, charuco_ids, marker_corners, marker_ids = charuco_detector.detectBoard(img)
+    object_points_collected = pybuiltins.list()
+    image_points_collected = pybuiltins.list()
 
-
-    img = cv2.imread("../../calib/Camera30000.tif", cv2.IMREAD_GRAYSCALE)
-    ids_collected, corners_collected = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
-
-    for filepath in ["../../calib/Camera30001.tif","../../calib/Camera30002.tif","../../calib/Camera30003.tif","../../calib/Camera30004.tif",]
+    for filepath in ["../calib/Camera30029.tif",
+        "../calib/Camera30059.tif",
+        "../calib/Camera30089.tif",
+        "../calib/Camera30119.tif",
+        "../calib/Camera30149.tif",
+        "../calib/Camera30179.tif",
+        "../calib/Camera30209.tif",
+        "../calib/Camera30239.tif",
+        "../calib/Camera30269.tif",
+        "../calib/Camera30299.tif",
+        "../calib/Camera30329.tif",
+        "../calib/Camera30359.tif",
+        "../calib/Camera30389.tif",
+        "../calib/Camera30419.tif",
+        "../calib/Camera30449.tif",
+        "../calib/Camera30479.tif",
+    ]
         img = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
-        ids, corners = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
+        # ids, corners = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
+        corners, ids, _, _ = charuco_detector.detectBoard(img)
 
-        ids_collected = vcat(ids_collected, ids)
-        corners_collected = vcat(corners_collected, corners)
+        if pyis(ids, pybuiltins.None)
+            println("for filepath $filepath length(ids) == 0!")
+            break
+        end
+        # ids_collected = vcat(ids_collected, ids)
+        # corners_collected = vcat(corners_collected, corners)
+        # ids_collected = np.hstack((ids_collected, ids))
+        # corners_collected = np.vstack((corners_collected, corners))
+
+        object_points, image_points = charuco_board.matchImagePoints(corners, ids)
+        object_points_collected.append(object_points)
+        image_points_collected.append(image_points)
     end
-    
+
+    return cv2.calibrateCamera(object_points_collected, image_points_collected, (2560, 1692), pybuiltins.None, pybuiltins.None)
 end
 
 
@@ -289,7 +341,7 @@ function visualise_charuco_detection(filepath, charuco_detector)
     cv2.aruco.drawDetectedCornersCharuco(
         vis,
         np.asarray(charuco_corners, dtype=np.float32).reshape(-1, 1, 2),
-        charuco_ids, (0,0,255))
+        charuco_ids, (0, 0, 255))
 
     imshow(vis)
 end
@@ -302,19 +354,20 @@ function imshow(img)
     cv2.destroyAllWindows()
 end
 
-function uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
-    charuco_corners, charuco_ids, marker_corners, marker_ids = charuco_detector.detectBoard(img)
+function uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)::Tuple{Matrix{Float64},Vector{Int}}
+    # charuco_corners, charuco_ids, marker_corners, marker_ids = charuco_detector.detectBoard(img)
+    corners, ids, _, _ = charuco_detector.detectBoard(img)
     # board: 8x22
     # internal_corner_count = 21*7
     # marker_count = 4*22
     # marker_corner_count = 4*marker_count
     # total_corner_count = marker_corner_count + internal_corner_count
 
-    ids::Vector{Int} = [pyconvert(Int, ind) for ind in charuco_ids]
+    # ids::Vector{Int} = [pyconvert(Int, ind) for ind in charuco_ids]
 
     # for markerid in marker_ids
     #     # println("$markerid")
-    #     markerid = pyconvert(Int64, markerid)
+    #     markerid = pyconvert(Int, markerid)
     #     distributed_ids = distribute_marker_corner_id(markerid)
 
     #     for did in distributed_ids
@@ -322,18 +375,163 @@ function uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_d
     #     end
     # end
 
-    corners::Matrix{Float64} = pyconvert(Matrix{Float64}, charuco_corners)
+    # corners::Matrix{Float64} = pyconvert(Matrix{Float64}, charuco_corners)
 
     # for fourmarkercorners in marker_corners
     #     fourmarkercorners = pyconvert(Matrix{Float64}, fourmarkercorners[0])
 
     #     corners = vcat(corners, fourmarkercorners)
     # end
-    return ids, corners
+
+    if pyis(ids, pybuiltins.None)
+        return Matrix{Float64}(undef, 0, 0), Int[]
+
+    end
+
+    corners = pyconvert(Matrix{Float64}, corners)
+    ids = pyconvert(Vector{Int}, ids)
+
+    return corners, ids
 end
 
-function distribute_marker_corner_id(id::Int64)
-    return [1, 2, 3, 4].+(200 + id*4)
+function distribute_marker_corner_id(id::Int)
+    # four ids per marker square,
+    # 200 is greater than the corner ids max possible number
+    return [1, 2, 3, 4] .+ (200 + id * 4)
+end
+
+# detect unique points on charuco board
+# construct correspondences where the same point has been found by two different
+# cameras
+function detect_and_intersect()
+    filenameexpressions = [r"Camera 1\d\d\d\d.tif", r"Camera 2\d\d\d\d.tif", r"Camera3\d\d\d\d.tif", r"Camera 4\d\d\d\d.tif"]
+    directory = "../calib/"
+    filenames = readdir(directory)
+
+    filenames = [
+        filter(name -> occursin(filenameexpression, name), filenames)
+        for filenameexpression in filenameexpressions
+    ]
+
+    charuco_detector, _ = create_charuco_detector_and_board()
+
+
+    detections_list = []
+    intersections_list = []
+    # for concurrent_framenames in zip(filenames...)
+    for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
+        # framenames: ("Camera 10029.tif", "Camera 20029.tif", "Camera30029.tif", "Camera 40029.tif")
+
+        # TODO check if indices are the same!
+
+        detections = []
+        for framename in concurrent_framenames
+            img = cv2.imread(directory * framename, cv2.IMREAD_GRAYSCALE)
+            corners, ids = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
+
+            push!(detections, (corners=corners, ids=ids))
+        end
+        push!(detections_list, detections)
+        # end
+
+        # see if the same point has been found by multiple cameras
+        # for detections in detections_list
+        # holds the ids of points that appear in a camera pair
+        intersections = []
+        for (i, j) in pairings
+            push!(intersections, intersect(detections[i].ids, detections[j].ids)::Vector{Int})
+        end
+        push!(intersections_list, intersections)
+    end
+
+    return detections_list, intersections_list
 end
 
 # Optimization.jl solve for system of equations
+
+function residuals(free_parameters, p)
+    theta = merge_free_and_fixed_parameters(free_parameters, p.fixed_parameters)
+
+    nair = 1.0 # indices of refraction
+    nwater = 1.33
+
+    residuals = []
+    for (detections, intersections) in zip(p.detections_list, p.intersections_list)
+        for (pairingindex, intersected_ids) in enumerate(intersections)
+            cameraindA, cameraindB = pairings[pairingindex]
+            interfaceA = cameraindA < 3 ? Interface(theta.interfaces[1].n / norm(theta.interfaces[1].n), theta.interfaces[1].d) : Interface(theta.interfaces[2].n / norm(theta.interfaces[2].n), theta.interfaces[2].d)
+            interfaceB = cameraindB < 3 ? Interface(theta.interfaces[1].n / norm(theta.interfaces[1].n), theta.interfaces[1].d) : Interface(theta.interfaces[2].n / norm(theta.interfaces[2].n), theta.interfaces[2].d)
+
+            for id in intersected_ids
+                detectionindexA = searchsortedfirst(
+                    detections[cameraindA].ids, id
+                )
+                detectionindexB = searchsortedfirst(
+                    detections[cameraindB].ids, id
+                )
+
+                pointA = detections[cameraindA].corners[detectionindexA]
+                pointB = detections[cameraindB].corners[detectionindexB]
+
+                rayA = airray_from_camera(pointA..., theta, cameraindA)
+                rayB = airray_from_camera(pointB..., theta, cameraindB)
+
+                refracted_rayA = refract_ray(rayA, interfaceA, nair, nwater)
+                refracted_rayB = refract_ray(rayB, interfaceB, nair, nwater)
+
+                push!(residuals, distancesquared(refracted_rayA, refracted_rayB))
+            end
+        end
+    end
+
+    # --- ridge / prior terms on all free quantities ---
+    position_priors = []
+    for i in 1:size(free_parameters.cameraposes, 1)
+        Δ = free_parameters.cameraposes[i, 4:6] .- p.prior.cameraposes[i, 4:6]
+        append!(position_priors, Δ ./ p.sigma_position)
+    end
+
+    distortion_ridge = []
+    for cp in free_parameters.cameraparameters
+        for k in (cp.k1, cp.k2, cp.p1, cp.p2, cp.k3)
+            push!(distortion_ridge, k / p.sigma_distortion)
+        end
+    end
+
+    return vcat(residuals, position_priors, distortion_ridge)
+end
+
+# function main()
+#     detections_list, intersections_list = detect_and_intersect()
+#     free_parameters, fixed_parameters = initial_guess()
+
+#     optf = OptimizationFunction(objective, ADTypes.AutoZygote())
+#     prob = OptimizationProblem(optf, free_parameters, (fixed_parameters, detections_list, intersections_list))
+
+#     sol = solve(prob, OptimizationLBFGSB.LBFGSB())
+#     println("$sol")
+# end
+#
+
+using NonlinearSolve, ADTypes
+
+function main()
+    detections_list, intersections_list = detect_and_intersect()
+    free_parameters, fixed_parameters = initial_guess()
+
+    p = (
+        fixed=fixed_parameters,
+        detections_list=detections_list,
+        intersections_list=intersections_list,
+        prior=free_parameters,       # reference for position priors
+        sigma_position=0.05,         # 1 cm, tune to your tape-measure confidence
+        sigma_distortion=0.05,       # ridge strength
+    )
+
+    nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
+    prob = NonlinearLeastSquaresProblem(nlfun, free_parameters, p)
+    sol = solve(prob, LevenbergMarquardt(; autodiff=AutoForwardDiff()))
+
+    println(sol)
+    return sol
+end
