@@ -12,6 +12,8 @@ using PythonCall
 using StaticArrays
 using Optimization
 using Rotations
+using NonlinearSolve, ADTypes
+using JSON
 
 # (1, 2) (1, 3) (1, 4) (2, 3) (2, 4) (3, 4)
 const pairings = [(i, j) for i in 1:4 for j in i+1:4]
@@ -58,7 +60,7 @@ function initial_guess()
         R_I4.x R_I4.y R_I4.z 0.423439 -0.715978 0
     ]
     defaultcameraparameters_free = (
-        # skew = 0.0,
+    # skew = 0.0,
     )
 
     pixel_size = 10e-6 # 10micrometers
@@ -265,8 +267,9 @@ end
 # boardimage = board.generateImage((1000, 3500))
 function create_charuco_detector_and_board()
     squares_x, squares_y = 8, 22
-    square_len = 14e-3
-    marker_len = 10e-3
+    printing_scale_factor::Float64 = 2745e-3 / 280
+    square_len = 14e-3 * printing_scale_factor
+    marker_len = 10e-3 * printing_scale_factor
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
     board = cv2.aruco.CharucoBoard((squares_x, squares_y), square_len, marker_len, aruco_dict)
@@ -416,7 +419,7 @@ function detect_and_intersect()
     detections_list = []
     intersections_list = []
     for concurrent_framenames in zip(filenames...)
-    # for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
+        # for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
         # framenames: ("Camera 10029.tif", "Camera 20029.tif", "Camera30029.tif", "Camera 40029.tif")
 
         # TODO check if indices are the same!
@@ -515,10 +518,68 @@ end
 # end
 #
 
-using NonlinearSolve, ADTypes
+function write_blender_json(theta, detections_list, intersections_list)
+    cameras = []
+    ncameras = 1:size(theta.cameraposes, 1)
+    for cameraind in ncameras
+        euler = RotXYZ(MRP(theta.cameraposes[cameraind, 1:3]...))
+        pos = theta.cameraposes[cameraind, 4:6]
 
-function main()
-    detections_list, intersections_list = detect_and_intersect()
+        camdata = Dict(
+            "position" => pos,
+            "rotation_euler_rad" => [euler.theta1, euler.theta2, euler.theta3]
+        )
+        push!(cameras, string(cameraind) => camdata)
+    end
+
+    frames = []
+    for frameind in 1:length(detections_list)
+        detections []
+
+        detections_object = detections_list[frameind]
+        intersections_object = intersections_list[frameind]
+
+        interesting_marker_ids = unique!(vcat!(intersections_object...))
+        for interesting_marker_id in interesting_marker_ids
+            for cameraind in 1:ncameras
+                if interesting_marker_id in detections_object[cameraind]
+                    # write the ray
+                    ray = 
+                    point_on_interface = intersect_ray_with_interface(ray, interface)
+                    refracted_ray = refract_ray(ray, interface, 1, 1.33)
+                    ray_from_camera = (
+                        string(cameraind)=> [
+                            theta.cameraposes[cameraind, 4:6],
+                            point_on_interface,
+                            refracted_ray.p + 0.4*refracted_ray.n,
+                        ]
+                    )
+                end
+            end
+        end
+
+        # for detections in detections_object
+        #     for detection_index, marker_id in enumerate(detections.ids)
+        #         push!(, marker_id=>Dict)
+        #     end
+        # end
+        push!(frames, Dict(
+            "frame" => frameind,
+            "detections" => detections,
+            "triangulations" => triangulations
+        ))
+    end
+
+    data = Dict()
+
+    json = JSON.json(data)
+
+    return json
+end
+
+const detections_list, intersections_list = detect_and_intersect()
+
+function main(detections_list, intersections_list)
     free_parameters, fixed_parameters = initial_guess()
 
     p = (
@@ -533,7 +594,7 @@ function main()
     resid0 = residuals(free_parameters, p)          # concrete Vector{Float64}, also a sanity check it runs
     @assert eltype(resid0) === Float64               # catches type instability early    nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
 
-    nlfun = NonlinearFunction(residuals; resid_prototype = resid0)
+    nlfun = NonlinearFunction(residuals; resid_prototype=resid0)
     prob = NonlinearLeastSquaresProblem(nlfun, free_parameters, p)
     sol = solve(prob, LevenbergMarquardt(; autodiff=AutoForwardDiff()))
 

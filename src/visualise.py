@@ -8,7 +8,7 @@ from mathutils import Vector
 # CONFIGURATION
 # ============================================================
 
-JSON_FILE = "/absolute/path/to/reconstruction.json"
+JSON_FILE = "/home/simon/mega/masterarbeit/code/src/test.json"
 
 # Blender frame numbering.
 # If your JSON starts at frame 0, this can remain 1 if you
