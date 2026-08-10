@@ -59,24 +59,22 @@ function initial_guess()
     ]
     defaultcameraparameters_free = (
         # skew = 0.0,
-
-        k1=0.0,
-        k2=0.0,
-        p1=0.0,
-        p2=0.0,
-        k3=0.0,
     )
 
     pixel_size = 10e-6 # 10micrometers
     lens_focal_length = 100e-3
     defaultcameraparameters_fixed = (
+        k1=0.0,
+        k2=0.0,
+        p1=0.0,
+        p2=0.0,
+        k3=0.0,
         fx=lens_focal_length / pixel_size,
         fy=lens_focal_length / pixel_size,
         cx=1280.0, # cx and cy are the pixel coordinates
         cy=800.0,  # of the image part, without the bottom
-        # info row
     )
-    cameraparameters_free = [defaultcameraparameters_free for _ in 1:4]
+    # cameraparameters_free = [defaultcameraparameters_free for _ in 1:4]
     cameraparameters_fixed = [defaultcameraparameters_fixed for _ in 1:4]
 
     interfaces = (
@@ -85,12 +83,12 @@ function initial_guess()
     )
     free_parameters = ComponentArray(
         cameraposes=camera2to4poses,
-        cameraparameters=cameraparameters_free,
-        interfaces=interfaces,
+        # cameraparameters=cameraparameters_free,
     )
     fixed_parameters = ComponentArray(
         cameraposes=camera1pose,
         cameraparameters=cameraparameters_fixed,
+        interfaces=interfaces,
     )
 
     return free_parameters, fixed_parameters
@@ -102,11 +100,11 @@ end
 function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
     cameraparameters = [
         (
-            k1=free_parameters.cameraparameters[i].k1,
-            k2=free_parameters.cameraparameters[i].k2,
-            p1=free_parameters.cameraparameters[i].p1,
-            p2=free_parameters.cameraparameters[i].p2,
-            k3=free_parameters.cameraparameters[i].k3,
+            k1=fixed_parameters.cameraparameters[i].k1,
+            k2=fixed_parameters.cameraparameters[i].k2,
+            p1=fixed_parameters.cameraparameters[i].p1,
+            p2=fixed_parameters.cameraparameters[i].p2,
+            k3=fixed_parameters.cameraparameters[i].k3,
             fx=fixed_parameters.cameraparameters[i].fx,
             fy=fixed_parameters.cameraparameters[i].fy,
             cx=fixed_parameters.cameraparameters[i].cx,
@@ -117,7 +115,7 @@ function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
     theta = ComponentArray(
         cameraposes=vcat(fixed_parameters.cameraposes, free_parameters.cameraposes),
         cameraparameters=cameraparameters,
-        interfaces=free_parameters.interfaces
+        interfaces=fixed_parameters.interfaces,
     )
     return theta
 end
@@ -455,12 +453,15 @@ function residuals(free_parameters, p)
     nair = 1.0 # indices of refraction
     nwater = 1.33
 
+    interface12 = Interface{T}(p.fixed_parameters.interfaces.interface12.n, p.fixed_parameters.interfaces.interface12.d)
+    interface34 = Interface{T}(p.fixed_parameters.interfaces.interface34.n, p.fixed_parameters.interfaces.interface34.d)
+
     residuals = T[]
     for (detections, intersections) in zip(p.detections_list, p.intersections_list)
         for (pairingindex, intersected_ids) in enumerate(intersections)
             cameraindA, cameraindB = pairings[pairingindex]
-            interfaceA = cameraindA < 3 ? Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface12.n / norm(theta.interfaces.interface12.n), theta.interfaces.interface12.d) : Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface34.n / norm(theta.interfaces.interface34.n), theta.interfaces.interface34.d)
-            interfaceB = cameraindB < 3 ? Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface12.n / norm(theta.interfaces.interface12.n), theta.interfaces.interface12.d) : Interface{eltype(theta.interfaces.interface12.n)}(theta.interfaces.interface34.n / norm(theta.interfaces.interface34.n), theta.interfaces.interface34.d)
+            interfaceA = cameraindA < 3 ? interface12 : interface34
+            interfaceB = cameraindB < 3 ? interface12 : interface34
 
             for id in intersected_ids
                 detectionindexA = searchsortedfirst(
@@ -491,14 +492,15 @@ function residuals(free_parameters, p)
         append!(position_priors, Δ ./ p.sigma_position)
     end
 
-    distortion_ridge = T[]
-    for cp in free_parameters.cameraparameters
-        for k in (cp.k1, cp.k2, cp.p1, cp.p2, cp.k3)
-            push!(distortion_ridge, k / p.sigma_distortion)
-        end
-    end
+    # distortion_ridge = T[]
+    # for cp in free_parameters.cameraparameters
+    #     for k in (cp.k1, cp.k2, cp.p1, cp.p2, cp.k3)
+    #         push!(distortion_ridge, k / p.sigma_distortion)
+    #     end
+    # end
 
-    return vcat(residuals, position_priors, distortion_ridge)
+    # return vcat(residuals, position_priors, distortion_ridge)
+    return vcat(residuals, position_priors)
 end
 
 # function main()
