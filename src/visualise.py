@@ -8,16 +8,16 @@ from mathutils import Vector
 # CONFIGURATION
 # ============================================================
 
-JSON_FILE = "/home/simon/mega/masterarbeit/code/src/test.json"
+JSON_FILE = "/home/simon/mega/masterarbeit/code/generated-files/calibration.json"
 
 # Blender frame numbering.
 # If your JSON starts at frame 0, this can remain 1 if you
 # want Blender frame 1 to correspond to JSON frame 0.
-BLENDER_FRAME_OFFSET = 1
+BLENDER_FRAME_OFFSET = 0
 
 # Visual sizes
-RAY_RADIUS = 0.003
-POINT_RADIUS = 0.012
+RAY_RADIUS = 0.001
+POINT_RADIUS = 0.002
 
 # Camera display size
 CAMERA_DISPLAY_SIZE = 0.10
@@ -235,23 +235,29 @@ def create_camera(camera_id, camera_data):
 
     if "rotation_euler_deg" in camera_data:
 
-        rotation = camera_data["rotation_euler_deg"]
+        # rotation = camera_data["rotation_euler_deg"]
 
-        cam_obj.rotation_euler = (
-            math.radians(rotation[0]),
-            math.radians(rotation[1]),
-            math.radians(rotation[2])
-        )
+        # cam_obj.rotation_euler = (
+        #     math.radians(rotation[0]),
+        #     math.radians(rotation[1]),
+        #     math.radians(rotation[2])
+        # )
+        raise ValueError("euler angles are broken!")
 
     elif "rotation_euler_rad" in camera_data:
 
-        rotation = camera_data["rotation_euler_rad"]
+        # rotation = camera_data["rotation_euler_rad"]
 
-        cam_obj.rotation_euler = (
-            rotation[0],
-            rotation[1],
-            rotation[2]
-        )
+        # cam_obj.rotation_euler = (
+        #     rotation[0],
+        #     rotation[1],
+        #     rotation[2]
+        # )
+        raise ValueError("euler angles are broken!")
+    elif "rotation_quaternion" in camera_data:
+        cam_obj.rotation_mode = "QUATERNION"
+        quaternions = camera_data["rotation_quaternion"]
+        cam_obj.rotation_quaternion = quaternions
 
     cam_data.display_size = CAMERA_DISPLAY_SIZE
 
@@ -293,6 +299,7 @@ if not MARKER_IDS:
 
 
 CAMERA_IDS = list(DATA["cameras"].keys())
+print("CAMERA_IDS: ", CAMERA_IDS)
 
 
 # ------------------------------------------------------------
@@ -321,7 +328,7 @@ for marker_id in MARKER_IDS:
             f"Ray_M{marker_id}_C{camera_id}_Water"
         )
 
-        camera_index = int(camera_id)
+        camera_index = int(camera_id)-1
 
         air = create_ray(
             air_name,

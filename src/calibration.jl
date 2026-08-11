@@ -233,8 +233,10 @@ function intersect_ray_with_interface(ray::Ray, interface::Interface)
     return ray.p + lambda * ray.n
 end
 
+
+
 # the interface normal must point to the side where the light is coming from!!
-function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)
+function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)::Ray
     # apply Snellius' Law
     cosalpha = -dot(interface.n, ray.n)
     @assert(cosalpha > 0)
@@ -259,10 +261,23 @@ function testrefraction()
     println("refracted ray: $refractedray")
 end
 
-function distancesquared(ray1::Ray, ray2::Ray)
+function distancesquared_ray_ray(ray1::Ray, ray2::Ray)
     normal = cross(ray1.n, ray2.n)
-    return dot(ray1.p - ray2.p, normal)^2 / (dot(normal, normal))
+    return dot(ray1.p - ray2.p, normal)^2 / dot(normal, normal)
 end
+
+function distance_ray_ray(ray1::Ray, ray2::Ray)
+    normal = cross(ray1.n, ray2.n)
+    return dot(ray1.p - ray2.p, normal) / norm(normal)
+end
+
+function closest_points_and_distance(ray1::Ray, ray2::Ray)
+    normal = cross(ray1.n, ray2.n)
+    (t1, lambda, t2) = hcat(ray1.n, normal, -ray2.n)\(ray2.p - ray1.p)
+    return (ray1.p + t1*ray1.n, ray2.p + t2*ray2.n, lambda * norm(normal))
+end
+
+# function closest_points
 
 # boardimage = board.generateImage((1000, 3500))
 function create_charuco_detector_and_board()
@@ -409,27 +424,49 @@ function detect_and_intersect()
     directory = "../calib/"
     filenames = readdir(directory)
 
+    # all framenumbers occurring at least in one camera
+    framenumbers = filenames .|>
+                   (name -> match(r"\d\d\d\d.tif", name) |>
+                            match -> match.match .|>
+                                     string -> parse(Int, string[1:4])
+                   ) |> sort! |> unique!
+
     filenames = [
         filter(name -> occursin(filenameexpression, name), filenames)
         for filenameexpression in filenameexpressions
+    ]
+
+    # Map frame number -> filename for each camera
+    filenames_by_frame = [
+        Dict(
+            parse(Int, match(r"\d{5}", name).match[2:5]) => name
+            for name in camera_filenames
+        )
+        for camera_filenames in filenames
     ]
 
     charuco_detector, _ = create_charuco_detector_and_board()
 
     detections_list = []
     intersections_list = []
-    for concurrent_framenames in zip(filenames...)
+    # for concurrent_framenames in zip(filenames...)
+    for framenumber in framenumbers
         # for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
         # framenames: ("Camera 10029.tif", "Camera 20029.tif", "Camera30029.tif", "Camera 40029.tif")
 
-        # TODO check if indices are the same!
-
         detections = []
-        for framename in concurrent_framenames
-            img = cv2.imread(directory * framename, cv2.IMREAD_GRAYSCALE)
-            corners, ids = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
+        # filenames_for_camera are equivalent to filenames_by_frame[cameraind]
+        for filenames_for_camera in filenames_by_frame
+            framename = get(filenames_for_camera, framenumber, nothing)
 
-            push!(detections, (corners=corners, ids=ids))
+            if framename === nothing
+                push!(detections, (corners=Matrix{Float64}(undef, 0, 0), ids=Int[]))
+            else
+                img = cv2.imread(directory * framename, cv2.IMREAD_GRAYSCALE)
+                corners, ids = uniquely_identifiable_points_from_image_of_charuco_board(img, charuco_detector)
+
+                push!(detections, (corners=corners, ids=ids))
+            end
         end
         push!(detections_list, detections)
         # end
@@ -483,7 +520,7 @@ function residuals(free_parameters, p)
                 refracted_rayA = refract_ray(rayA, interfaceA, nair, nwater)
                 refracted_rayB = refract_ray(rayB, interfaceB, nair, nwater)
 
-                push!(residuals, distancesquared(refracted_rayA, refracted_rayB))
+                push!(residuals, distance_ray_ray(refracted_rayA, refracted_rayB))
             end
         end
     end
@@ -519,65 +556,83 @@ end
 #
 
 function write_blender_json(theta, detections_list, intersections_list)
-    cameras = []
-    ncameras = 1:size(theta.cameraposes, 1)
-    for cameraind in ncameras
-        euler = RotXYZ(MRP(theta.cameraposes[cameraind, 1:3]...))
+    cameras = Dict{String,Any}()
+    ncameras = size(theta.cameraposes, 1)
+    for cameraind in 1:ncameras
+        # euler = RotXYZ(transpose(Diagonal([-1, 1, -1])*MRP(theta.cameraposes[cameraind, 1:3]...)))
         pos = theta.cameraposes[cameraind, 4:6]
+        Rtoblender = Diagonal([1, -1, -1])
+        quat = QuatRotation(MRP(theta.cameraposes[cameraind, 1:3]...) * Rtoblender)
 
-        camdata = Dict(
-            "position" => pos,
-            "rotation_euler_rad" => [euler.theta1, euler.theta2, euler.theta3]
+        cameras[string(cameraind)] = Dict(
+            "position" => collect(pos),
+            # "rotation_euler_rad" => [euler.theta1, euler.theta2, euler.theta3],
+            "rotation_quaternion" => [quat.q.s, quat.q.v1, quat.q.v2, quat.q.v3],
         )
-        push!(cameras, string(cameraind) => camdata)
     end
 
     frames = []
-    for frameind in 1:length(detections_list)
-        detections []
+    # for frameind in 1:length(detections_list)
+    for frameind in 1:10
+        detections = Dict{String,Any}()
 
         detections_object = detections_list[frameind]
         intersections_object = intersections_list[frameind]
 
-        interesting_marker_ids = unique!(vcat!(intersections_object...))
+        interesting_marker_ids = unique!(vcat(intersections_object...))
+
         for interesting_marker_id in interesting_marker_ids
+            detections_per_marker = Dict{String,Any}()
+
             for cameraind in 1:ncameras
-                if interesting_marker_id in detections_object[cameraind]
+                camera_detection = detections_object[cameraind]
+
+                if interesting_marker_id in camera_detection.ids
+                    interface = cameraind < 3 ? theta.interfaces.interface12 : theta.interfaces.interface34
+                    interface = Interface(SVector{3,Float64}(interface.n), interface.d)
+
+                    detection_index::Int = searchsortedfirst(camera_detection.ids, interesting_marker_id)
+                    point_on_imageplane_px = camera_detection.corners[detection_index, :]
+
                     # write the ray
-                    ray = 
-                    point_on_interface = intersect_ray_with_interface(ray, interface)
-                    refracted_ray = refract_ray(ray, interface, 1, 1.33)
-                    ray_from_camera = (
-                        string(cameraind)=> [
-                            theta.cameraposes[cameraind, 4:6],
-                            point_on_interface,
-                            refracted_ray.p + 0.4*refracted_ray.n,
-                        ]
-                    )
+                    airray = airray_from_camera(point_on_imageplane_px..., theta, cameraind)
+                    # point_on_interface = intersect_ray_with_interface(airray, interface)
+                    refracted_ray = refract_ray(airray, interface, 1.0, 1.33)
+                    ray = [
+                        collect(theta.cameraposes[cameraind, 4:6]),
+                        collect(refracted_ray.p),
+                        collect(refracted_ray.p + 0.4 * refracted_ray.n),
+                    ]
+
+                    detections_per_marker[string(cameraind)] = Dict("ray" => ray)
                 end
             end
+            detections[string(interesting_marker_id)] = detections_per_marker
         end
 
-        # for detections in detections_object
-        #     for detection_index, marker_id in enumerate(detections.ids)
-        #         push!(, marker_id=>Dict)
-        #     end
-        # end
         push!(frames, Dict(
             "frame" => frameind,
             "detections" => detections,
-            "triangulations" => triangulations
+            # "triangulations" => triangulations
         ))
     end
 
-    data = Dict()
+    data = Dict(
+        "cameras" => cameras,
+        "frames" => frames,
+    )
 
+    # println(data)
+
+    # json = JSON.json(data, pretty=1)
     json = JSON.json(data)
+
+    write("generated-files/calibration.json", json)
 
     return json
 end
 
-const detections_list, intersections_list = detect_and_intersect()
+detections_list, intersections_list = detect_and_intersect()
 
 function main(detections_list, intersections_list)
     free_parameters, fixed_parameters = initial_guess()
@@ -599,5 +654,9 @@ function main(detections_list, intersections_list)
     sol = solve(prob, LevenbergMarquardt(; autodiff=AutoForwardDiff()))
 
     println(sol)
+
+    thetasol = merge_free_and_fixed_parameters(sol.u, fixed_parameters)
+    write_blender_json(thetasol, detections_list, intersections_list)
+
     return sol
 end
