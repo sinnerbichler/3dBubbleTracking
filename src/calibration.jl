@@ -273,8 +273,8 @@ end
 
 function closest_points_and_distance(ray1::Ray, ray2::Ray)
     normal = cross(ray1.n, ray2.n)
-    (t1, lambda, t2) = hcat(ray1.n, normal, -ray2.n)\(ray2.p - ray1.p)
-    return (ray1.p + t1*ray1.n, ray2.p + t2*ray2.n, lambda * norm(normal))
+    (t1, lambda, t2) = hcat(ray1.n, normal, -ray2.n) \ (ray2.p - ray1.p)
+    return (ray1.p + t1 * ray1.n, ray2.p + t2 * ray2.n, lambda * norm(normal))
 end
 
 # function closest_points
@@ -572,9 +572,10 @@ function write_blender_json(theta, detections_list, intersections_list)
     end
 
     frames = []
-    # for frameind in 1:length(detections_list)
-    for frameind in 1:10
+    for frameind in eachindex(detections_list)
+        # for frameind in 1:10
         detections = Dict{String,Any}()
+        triangulations = Dict{String,Any}()
 
         detections_object = detections_list[frameind]
         intersections_object = intersections_list[frameind]
@@ -583,6 +584,7 @@ function write_blender_json(theta, detections_list, intersections_list)
 
         for interesting_marker_id in interesting_marker_ids
             detections_per_marker = Dict{String,Any}()
+            rays_per_camera = Dict{Int,Ray}()
 
             for cameraind in 1:ncameras
                 camera_detection = detections_object[cameraind]
@@ -605,15 +607,37 @@ function write_blender_json(theta, detections_list, intersections_list)
                     ]
 
                     detections_per_marker[string(cameraind)] = Dict("ray" => ray)
+                    rays_per_camera[cameraind] = refracted_ray
                 end
             end
             detections[string(interesting_marker_id)] = detections_per_marker
+
+            ###### Triangulation #########
+            cams_seen = sort(collect(keys(rays_per_camera)))
+            pairs = Dict{String,Any}()
+            points = Vector{Vector{Float64}}()
+            for i in 1:length(cams_seen)-1, j in i+1:length(cams_seen)
+                ci, cj = cams_seen[i], cams_seen[j]
+                p1, p2, _ = closest_points_and_distance(rays_per_camera[ci], rays_per_camera[cj])
+                midpoint = collect((p1 + p2) / 2)
+                pairs["$ci-$cj"] = midpoint
+                push!(points, midpoint)
+            end
+
+            if length(points) > 1
+                mean_point = sum(points) / length(points)
+                triangulations[string(interesting_marker_id)] = Dict(
+                    "pairs" => pairs,
+                    "mean" => mean_point,
+                )
+            end
+
         end
 
         push!(frames, Dict(
             "frame" => frameind,
             "detections" => detections,
-            # "triangulations" => triangulations
+            "triangulations" => triangulations,
         ))
     end
 
