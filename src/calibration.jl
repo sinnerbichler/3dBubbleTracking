@@ -273,13 +273,37 @@ end
 
 function distance_point_ray(point, ray::Ray)
     connection = point - ray.p
-    return norm(connection - dot(connection, ray.n)*ray.n)
+    return norm(connection - dot(connection, ray.n) * ray.n)
 end
 
 function closest_points_and_distance(ray1::Ray, ray2::Ray)
     normal = cross(ray1.n, ray2.n)
     (t1, lambda, t2) = hcat(ray1.n, normal, -ray2.n) \ (ray2.p - ray1.p)
     return (ray1.p + t1 * ray1.n, ray2.p + t2 * ray2.n, lambda * norm(normal))
+end
+
+function triangulate_rays(rays::Vector{Ray})
+    A = zeros(3, 3)
+    b = zeros(3)
+    for r in rays
+        P = I - r.n * r.n'      # projector onto plane ⊥ r.n
+        A += P
+        b += P * r.p
+    end
+    return A \ b   # least-squares point minimizing Σ ||P_i(X - p_i)||²
+end
+
+function residual_point_ray(point, ray::Ray)
+    connection = point - ray.p
+    return connection - dot(connection, ray.n) * ray.n   # 2D-rank vector, no norm
+end
+
+function residuals_from_rays(rays::Vector{Ray{T}}) where T
+    if length(rays) < 2
+        return T[]
+    end
+    X = triangulate(rays)
+    return vcat([residual_point_ray(X, r) for r in rays]...)
 end
 
 # function closest_points
@@ -560,15 +584,16 @@ function residualsv2(free_parameters, p)
     interface34 = Interface{T}(p.fixed_parameters.interfaces.interface34.n, p.fixed_parameters.interfaces.interface34.d)
 
     residuals = T[]
-    for (frameind, detectionsquadruple) in enumerate(p.detections_list)
+    for detectionsquadruple in p.detections_list
         interesting_marker_ids = Set{Int}()
         for detections in detectionsquadruple
             push!(interesting_marker_ids, detections.ids...)
         end
 
         for interesting_marker_id in interesting_marker_ids
-            cameras_to_point_map::Dict{Int,Vector{Float64}} = Dict(i => d.corners[j, :] for (i, d) in enumerate(detectionsquadruple)
-                                                                   for j in findall(==(interesting_marker_id), d.ids))
+            cameras_to_point_map::Dict{Int,Vector{Float64}} =
+                Dict(i => d.corners[j, :] for (i, d) in enumerate(detectionsquadruple)
+                     for j in findall(==(interesting_marker_id), d.ids))
 
             waterrays = []
             for (cameraind, detection_pixels) in Base.pairs(cameras_to_point_map)
@@ -578,32 +603,12 @@ function residualsv2(free_parameters, p)
                 push!(waterrays, waterray)
             end
 
-            if length(waterrays) == 4
-                p121, p122, _ = closest_points_and_distance(waterrays[1], waterrays[2])
-                p232, p233, _ = closest_points_and_distance(waterrays[2], waterrays[3])
-                p313, p311, _ = closest_points_and_distance(waterrays[3], waterrays[4])
-                p414, p411, _ = closest_points_and_distance(waterrays[4], waterrays[1])
-
-                midpoint = ((p121 + p122) / 2 + (p232 + p233) / 2 + (p313 + p311) / 2 + (p414 + p411) / 2) / 4
-                push!(residuals, distance_point_ray(midpoint, waterrays[1]))
-                push!(residuals, distance_point_ray(midpoint, waterrays[2]))
-                push!(residuals, distance_point_ray(midpoint, waterrays[3]))
-                push!(residuals, distance_point_ray(midpoint, waterrays[4]))
-            elseif length(waterrays) == 3
-                p121, p122, _ = closest_points_and_distance(waterrays[1], waterrays[2])
-                p232, p233, _ = closest_points_and_distance(waterrays[2], waterrays[3])
-                p313, p311, _ = closest_points_and_distance(waterrays[3], waterrays[1])
-
-                midpoint = ((p121 + p122) / 2 + (p232 + p233) / 2 + (p313 + p311) / 2) / 3
-                push!(residuals, distance_point_ray(midpoint, waterrays[1]))
-                push!(residuals, distance_point_ray(midpoint, waterrays[2]))
-                push!(residuals, distance_point_ray(midpoint, waterrays[3]))
-            elseif length(waterrays) == 2
-                push!(residuals, distance_ray_ray(waterrays[1], waterrays[2]))
-            end
-            # skip the case where only one camera has seen the marker
+            push!(residuals, residuals_from_rays(waterrays)...)
         end
     end
+
+    @assert eltype(residuals) == T
+    return residuals
 end
 
 # function main()
