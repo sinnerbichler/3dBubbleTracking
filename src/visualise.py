@@ -1,5 +1,4 @@
 import json
-import math
 
 import bpy
 from mathutils import Vector
@@ -17,7 +16,7 @@ BLENDER_FRAME_OFFSET = 0
 
 # Visual sizes
 RAY_RADIUS = 0.0005
-POINT_RADIUS = 0.001
+POINT_RADIUS = 0.002
 
 # Camera display size
 CAMERA_DISPLAY_SIZE = 0.10

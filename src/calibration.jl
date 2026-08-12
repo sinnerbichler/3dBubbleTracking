@@ -32,7 +32,6 @@ struct Interface{T}
     d::T # d = dot(-p,n), where p is a point on the plane. note the minus!
 end
 
-# img = Images.load("../calib/Camera30001.tif")
 
 # Initial Parameter setup.
 # whenever parameters are switched between fixed <=> free, the theta reconstruction must
@@ -123,15 +122,6 @@ function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
 end
 
 
-
-
-# 2. water ray function
-# 2.1 air ray from camera
-# 2.2 interface intersection
-# 2.3 ray refraction
-
-# 2.1 air ray from camera
-
 # this function returns the undistorted points on the camera image plane from the distortion coefficients
 # u, v are normalized coordinates
 function undistort_point(ud, vd, cameraparameters)
@@ -193,15 +183,6 @@ function pixelcoords2normalisedcoords(x, y, cameraparameters)
     return u, v
 end
 
-# function R3toso3(w::SVector{3})::SMatrix{3, 3}
-#     return @SMatrix [
-#             0 -w[3]  w[2];
-#          w[3]     0 -w[1];
-#         -w[2]  w[1]     0;
-#     ]
-# end
-
-# function 
 
 # returns a description in world coordinates of the ray that pierces through
 # the point described by the pixelcoordinates on the cameras' image plane
@@ -247,7 +228,7 @@ function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)::
 
     intersection_point = intersect_ray_with_interface(ray, interface)
 
-    return Ray(n_refract, intersection_point)
+    return Ray(n_refract / norm(n_refract), intersection_point)
 end
 
 function testrefraction()
@@ -282,7 +263,7 @@ function closest_points_and_distance(ray1::Ray, ray2::Ray)
     return (ray1.p + t1 * ray1.n, ray2.p + t2 * ray2.n, lambda * norm(normal))
 end
 
-function triangulate_rays(rays::Vector{Ray})
+function triangulate_rays(rays::Vector{Ray{T}}) where T
     A = zeros(3, 3)
     b = zeros(3)
     for r in rays
@@ -302,11 +283,10 @@ function residuals_from_rays(rays::Vector{Ray{T}}) where T
     if length(rays) < 2
         return T[]
     end
-    X = triangulate(rays)
+    X = triangulate_rays(rays)
     return vcat([residual_point_ray(X, r) for r in rays]...)
 end
 
-# function closest_points
 
 # boardimage = board.generateImage((1000, 3500))
 function create_charuco_detector_and_board()
@@ -480,7 +460,6 @@ function detect_and_intersect()
     intersections_list = []
     # for concurrent_framenames in zip(filenames...)
     for framenumber in framenumbers
-        # for concurrent_framenames in collect(zip(filenames...))[1:4] # TODO
         # framenames: ("Camera 10029.tif", "Camera 20029.tif", "Camera30029.tif", "Camera 40029.tif")
 
         detections = []
@@ -498,7 +477,6 @@ function detect_and_intersect()
             end
         end
         push!(detections_list, detections)
-        # end
 
         # see if the same point has been found by multiple cameras
         # for detections in detections_list
@@ -513,7 +491,6 @@ function detect_and_intersect()
     return detections_list, intersections_list
 end
 
-# Optimization.jl solve for system of equations
 
 function residuals(free_parameters, p)
     theta = merge_free_and_fixed_parameters(free_parameters, p.fixed_parameters)
@@ -585,17 +562,18 @@ function residualsv2(free_parameters, p)
 
     residuals = T[]
     for detectionsquadruple in p.detections_list
-        interesting_marker_ids = Set{Int}()
+        interesting_marker_ids = Int[]
         for detections in detectionsquadruple
             push!(interesting_marker_ids, detections.ids...)
         end
+        unique!(interesting_marker_ids)
 
         for interesting_marker_id in interesting_marker_ids
             cameras_to_point_map::Dict{Int,Vector{Float64}} =
                 Dict(i => d.corners[j, :] for (i, d) in enumerate(detectionsquadruple)
                      for j in findall(==(interesting_marker_id), d.ids))
 
-            waterrays = []
+            waterrays = Vector{Ray{T}}()
             for (cameraind, detection_pixels) in Base.pairs(cameras_to_point_map)
                 interface = cameraind < 3 ? interface12 : interface34
                 airray = airray_from_camera(detection_pixels..., theta, cameraind)
@@ -611,23 +589,11 @@ function residualsv2(free_parameters, p)
     return residuals
 end
 
-# function main()
-#     detections_list, intersections_list = detect_and_intersect()
-#     free_parameters, fixed_parameters = initial_guess()
-
-#     optf = OptimizationFunction(objective, ADTypes.AutoZygote())
-#     prob = OptimizationProblem(optf, free_parameters, (fixed_parameters, detections_list, intersections_list))
-
-#     sol = solve(prob, OptimizationLBFGSB.LBFGSB())
-#     println("$sol")
-# end
-#
 
 function write_blender_json(theta, detections_list, intersections_list)
     cameras = Dict{String,Any}()
     ncameras = size(theta.cameraposes, 1)
     for cameraind in 1:ncameras
-        # euler = RotXYZ(transpose(Diagonal([-1, 1, -1])*MRP(theta.cameraposes[cameraind, 1:3]...)))
         pos = theta.cameraposes[cameraind, 4:6]
         Rtoblender = Diagonal([1, -1, -1])
         quat = QuatRotation(MRP(theta.cameraposes[cameraind, 1:3]...) * Rtoblender)
@@ -742,10 +708,11 @@ function main(detections_list, intersections_list)
         sigma_distortion=0.05,       # ridge strength
     )
 
-    resid0 = residuals(free_parameters, p)          # concrete Vector{Float64}, also a sanity check it runs
-    @assert eltype(resid0) === Float64               # catches type instability early    nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
+    resid0 = residualsv2(free_parameters, p)
+    @assert eltype(resid0) === Float64    # catches type instability early
+    # nlfun = NonlinearFunction(residuals; resid_prototype=residuals(free_parameters, p))
 
-    nlfun = NonlinearFunction(residuals; resid_prototype=resid0)
+    nlfun = NonlinearFunction(residualsv2; resid_prototype=resid0)
     prob = NonlinearLeastSquaresProblem(nlfun, free_parameters, p)
     sol = solve(prob, LevenbergMarquardt(; autodiff=AutoForwardDiff()))
 
