@@ -613,7 +613,8 @@ function write_blender_json(theta, detections_list, intersections_list)
             detections[string(interesting_marker_id)] = detections_per_marker
 
             ###### Triangulation #########
-            cams_seen = sort(collect(keys(rays_per_camera)))
+            # frameind, interesting_marker_id
+            cams_seen = sort(collect(keys(rays_per_camera))) # all cams that saw the marker
             pairs = Dict{String,Any}()
             points = Vector{Vector{Float64}}()
             for i in 1:length(cams_seen)-1, j in i+1:length(cams_seen)
@@ -630,8 +631,11 @@ function write_blender_json(theta, detections_list, intersections_list)
                     "pairs" => pairs,
                     "mean" => mean_point,
                 )
+            else
+                triangulations[string(interesting_marker_id)] = Dict(
+                    "pairs" => pairs,
+                )
             end
-
         end
 
         push!(frames, Dict(

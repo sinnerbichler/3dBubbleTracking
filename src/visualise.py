@@ -16,8 +16,8 @@ JSON_FILE = "/home/simon/mega/masterarbeit/code/generated-files/calibration.json
 BLENDER_FRAME_OFFSET = 0
 
 # Visual sizes
-RAY_RADIUS = 0.001
-POINT_RADIUS = 0.002
+RAY_RADIUS = 0.0005
+POINT_RADIUS = 0.001
 
 # Camera display size
 CAMERA_DISPLAY_SIZE = 0.10
