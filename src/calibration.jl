@@ -271,6 +271,11 @@ function distance_ray_ray(ray1::Ray, ray2::Ray)
     return dot(ray1.p - ray2.p, normal) / norm(normal)
 end
 
+function distance_point_ray(point, ray::Ray)
+    connection = point - ray.p
+    return norm(connection - dot(connection, ray.n)*ray.n)
+end
+
 function closest_points_and_distance(ray1::Ray, ray2::Ray)
     normal = cross(ray1.n, ray2.n)
     (t1, lambda, t2) = hcat(ray1.n, normal, -ray2.n) \ (ray2.p - ray1.p)
@@ -541,6 +546,64 @@ function residuals(free_parameters, p)
 
     # return vcat(residuals, position_priors, distortion_ridge)
     return vcat(residuals, position_priors)
+end
+
+
+function residualsv2(free_parameters, p)
+    theta = merge_free_and_fixed_parameters(free_parameters, p.fixed_parameters)
+    T = eltype(free_parameters)
+
+    nair = 1.0 # indices of refraction
+    nwater = 1.33
+
+    interface12 = Interface{T}(p.fixed_parameters.interfaces.interface12.n, p.fixed_parameters.interfaces.interface12.d)
+    interface34 = Interface{T}(p.fixed_parameters.interfaces.interface34.n, p.fixed_parameters.interfaces.interface34.d)
+
+    residuals = T[]
+    for (frameind, detectionsquadruple) in enumerate(p.detections_list)
+        interesting_marker_ids = Set{Int}()
+        for detections in detectionsquadruple
+            push!(interesting_marker_ids, detections.ids...)
+        end
+
+        for interesting_marker_id in interesting_marker_ids
+            cameras_to_point_map::Dict{Int,Vector{Float64}} = Dict(i => d.corners[j, :] for (i, d) in enumerate(detectionsquadruple)
+                                                                   for j in findall(==(interesting_marker_id), d.ids))
+
+            waterrays = []
+            for (cameraind, detection_pixels) in Base.pairs(cameras_to_point_map)
+                interface = cameraind < 3 ? interface12 : interface34
+                airray = airray_from_camera(detection_pixels..., theta, cameraind)
+                waterray = refract_ray(airray, interface, nair, nwater)
+                push!(waterrays, waterray)
+            end
+
+            if length(waterrays) == 4
+                p121, p122, _ = closest_points_and_distance(waterrays[1], waterrays[2])
+                p232, p233, _ = closest_points_and_distance(waterrays[2], waterrays[3])
+                p313, p311, _ = closest_points_and_distance(waterrays[3], waterrays[4])
+                p414, p411, _ = closest_points_and_distance(waterrays[4], waterrays[1])
+
+                midpoint = ((p121 + p122) / 2 + (p232 + p233) / 2 + (p313 + p311) / 2 + (p414 + p411) / 2) / 4
+                push!(residuals, distance_point_ray(midpoint, waterrays[1]))
+                push!(residuals, distance_point_ray(midpoint, waterrays[2]))
+                push!(residuals, distance_point_ray(midpoint, waterrays[3]))
+                push!(residuals, distance_point_ray(midpoint, waterrays[4]))
+            elseif length(waterrays) == 3
+                p121, p122, _ = closest_points_and_distance(waterrays[1], waterrays[2])
+                p232, p233, _ = closest_points_and_distance(waterrays[2], waterrays[3])
+                p313, p311, _ = closest_points_and_distance(waterrays[3], waterrays[1])
+
+                midpoint = ((p121 + p122) / 2 + (p232 + p233) / 2 + (p313 + p311) / 2) / 3
+                push!(residuals, distance_point_ray(midpoint, waterrays[1]))
+                push!(residuals, distance_point_ray(midpoint, waterrays[2]))
+                push!(residuals, distance_point_ray(midpoint, waterrays[3]))
+            elseif length(waterrays) == 2
+                push!(residuals, distance_ray_ray(waterrays[1], waterrays[2]))
+            end
+            # skip the case where only one camera has seen the marker
+        end
+    end
 end
 
 # function main()
