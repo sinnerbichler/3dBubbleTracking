@@ -58,6 +58,8 @@ function initial_guess()
         R_I3.x R_I3.y R_I3.z -0.445777 -0.763216 0;
         R_I4.x R_I4.y R_I4.z 0.423439 -0.715978 0
     ]
+    # meandiff = [0.00702467  0.00852816  -0.00385455  0.102572  -0.144641  -0.015324] # cameraposes - sol.u.cameraposes
+    # camera2to4poses -= [1; 1; 1] * meandiff
     defaultcameraparameters_free = (
     # skew = 0.0,
     )
