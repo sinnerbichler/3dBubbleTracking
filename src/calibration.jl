@@ -3,9 +3,9 @@
 
 using ComponentArrays
 using CondaPkg
-using ImageIO
-using ImageInTerminal
-using Images
+# using ImageIO
+# using ImageInTerminal
+# using Images
 using LinearAlgebra
 using Pkg
 using PythonCall
@@ -185,6 +185,13 @@ function pixelcoords2normalisedcoords(x, y, cameraparameters)
     return u, v
 end
 
+function normalisedcoords2pixelcoords(u, v, cameraparameters)
+    fx, fy, cx, cy = cameraparameters.fx, cameraparameters.fy, cameraparameters.cx, cameraparameters.cy
+
+    x = u*fx + cx
+    y = v*fy + cy
+    return x, y
+end
 
 # returns a description in world coordinates of the ray that pierces through
 # the point described by the pixelcoordinates on the cameras' image plane
@@ -242,6 +249,16 @@ function testrefraction()
     println("ray:           $ray")
     println("interface:     $interface")
     println("refracted ray: $refractedray")
+end
+
+function waterray_from_camera(x::Float64, y::Float64, theta, cameraind::Int, n1::Float64, n2::Float64)::Ray
+    T = eltype(theta)
+    airray = airray_from_camera(x, y, theta, cameraind)
+    interface12 = Interface{T}(theta.interfaces.interface12.n, theta.interfaces.interface12.d)
+    interface34 = Interface{T}(theta.interfaces.interface34.n, theta.interfaces.interface34.d)
+    interface = cameraind < 3 ? interface12 : interface34
+    waterray = refract_ray(airray, interface, n1, n2)
+    return waterray
 end
 
 function distancesquared_ray_ray(ray1::Ray, ray2::Ray)
@@ -698,9 +715,10 @@ end
 
 detections_list, intersections_list = detect_and_intersect()
 
-function main(detections_list, intersections_list)
+function run_calibration(detections_list, intersections_list)
     free_parameters, fixed_parameters = initial_guess()
-
+    # theta = merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
+    
     p = (
         fixed_parameters=fixed_parameters,
         detections_list=detections_list,
