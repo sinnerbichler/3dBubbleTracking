@@ -1,2 +1,5 @@
 [editor]
 workspace-lsp-roots = ["/home/simon/mega/masterarbeit/code/src"]
+
+[editor.lsp]
+display-inlay-hints = false

@@ -241,7 +241,7 @@ function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)::
 end
 
 function testrefraction()
-    interface = Interface([0.0; 1.0; 0.0], -1.1)
+    interface = Interface(@SVector[0.0; 1.0; 0.0], -1.1)
     ray = Ray([1; -1; 0] ./ sqrt(2), [-2, 2, 0]')
     refractedray = refract_ray(ray, interface, 0.9, 1)
 
@@ -251,7 +251,7 @@ function testrefraction()
     println("refracted ray: $refractedray")
 end
 
-function waterray_from_camera(x::Float64, y::Float64, theta, cameraind::Int, n1::Float64, n2::Float64)::Ray
+function waterray_from_camera(x, y, theta, cameraind::Int, n1, n2)::Ray
     T = eltype(theta)
     airray = airray_from_camera(x, y, theta, cameraind)
     interface12 = Interface{T}(theta.interfaces.interface12.n, theta.interfaces.interface12.d)
