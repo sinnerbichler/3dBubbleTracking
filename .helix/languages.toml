@@ -1,0 +1,6 @@
+[[language]]
+name = "julia"
+language-servers = [ "jetls" ]
+
+[language-server]
+jetls = { command = "jetls", args = ["serve"], timeout = 60 }

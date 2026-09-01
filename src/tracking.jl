@@ -10,6 +10,7 @@ using GLMakie
 using ImageIO
 using FileIO
 using NearestNeighbors
+using ProgressBars
 
 const MAX_MISSES = 3
 const GATE_DIST = 15 # px
@@ -60,10 +61,11 @@ active_ids = Int[]
 function predict!(kf::KalmanFilter)
     kf.x = F*kf.x
     kf.P = F*kf.P*F' + Q
+    nothing
 end
 
-function out_of_frame(x::MVector{4, Float32})
-    return x[1] < 0 || x[1] > 2560 || x[2] < 0 || x[2] > 1600
+function out_of_frame(x)
+    return x[1] < 0 || x[1] > 1600 || x[2] < 0 || x[2] > 2560
 end
 
 function init_kf(detection::SVector{2, Float32})::KalmanFilter
@@ -114,7 +116,7 @@ end
 #     return associations, unmatched_track_ids, unmatched_detections
 # end
 
-function associate(active_ids::Vector{Int}, midpoints::Vector{SVector{2, Float32}})
+function associate(active_ids::Vector{Int}, tracks::Dict{Int, Track}, midpoints::Vector{SVector{2, Float32}})
     prediction_points = MMatrix{2, length(active_ids), Float32}(undef)
     for (col, id) in zip(eachcol(prediction_points), active_ids)
         col .= tracks[id].kf.x[1:2]
@@ -127,7 +129,7 @@ function associate(active_ids::Vector{Int}, midpoints::Vector{SVector{2, Float32
     associations = zeros(Int, length(active_ids))
     # unmatched_track_ids = Int[]
 
-    for gate_dist in [15, 10, 5]
+    for gate_dist in [30.0, 15.0, 10.0, 5.0, 2.0]
         for (index, track_id) in enumerate(active_ids)
             if !iszero(associations[index])
                 continue
@@ -157,20 +159,17 @@ function associate(active_ids::Vector{Int}, midpoints::Vector{SVector{2, Float32
     return associations, unmatched_track_ids, unmatched_detection_ids
 end
 
-function run_tracking(jsonfilename)
-    midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
-
+function run_tracking(jsonfilename, midpoints_per_frame)
     tracks = Dict{Int, Track}()
     active_ids = Int[]
-    for (frameind, midpoints) in enumerate(midpoints_per_frame[1:20])
-        println("analysing frame $frameind")
+    for (frameind, midpoints) in ProgressBar(enumerate(midpoints_per_frame))
+        # println("analysing frame $frameind")
         # prediction
         for id in active_ids
             predict!(tracks[id].kf)
         end
 
-        # associating with the hungarian algorithm
-        associations::Vector{Int}, unmatched_track_ids, unmatched_detection_ids = associate(active_ids, midpoints)
+        associations::Vector{Int}, unmatched_track_ids, unmatched_detection_ids = associate(active_ids, tracks, midpoints)
 
         # update tracks
         for (id_index, midpoint_index) in enumerate(associations)
@@ -210,6 +209,25 @@ function run_tracking(jsonfilename)
             push!(active_ids, next_id)
         end
     end
+
+    return tracks
+end
+
+function triangulate_tracks(track1::Track, track2::Track)
+    if track1.start_frame + length(track1.history) < track2.start_frame ||
+        track2.start_frame + length(track2.history) < track1.start_frame
+        continue
+    end
+    return 
+end
+
+
+function assciate_tracks(tracks_per_camera::Vector{Dict{Int, Track}})
+    tracks1, tracks2, tracks3, tracks4 = tracks_per_camera
+    for track3 in tracks3
+        for track1 in tracks1
+        end
+    end
 end
 
 function visualise_tracks(imagefilename, tracks)
@@ -222,6 +240,10 @@ function visualise_tracks(imagefilename, tracks)
     scatter!(ax, midpoints_per_frame[2], color=:orange)
     scatter!(ax, midpoints_per_frame[3])
     scatter!(ax, midpoints_per_frame[4])
+    scatter!(ax, midpoints_per_frame[5])
+    scatter!(ax, midpoints_per_frame[6])
+    scatter!(ax, midpoints_per_frame[7])
+    scatter!(ax, midpoints_per_frame[8])
     # scatter!(ax, midpoints_per_frame[5])
     # plot!(ax, tracks[1].history)
     # plot!(ax, tracks[2].history)
@@ -246,6 +268,20 @@ end
 function test_state()
     jsonfilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera1midpoints.json"
     imagefilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera 10000.tif"
+    jsonfilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera3midpoints.json"
+    imagefilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera30000.tif"
+
+    jsonfilenames = "/home/simon/mega/masterarbeit/fullrun3_200/" .* [
+        "Camera1midpoints.json",
+        "Camera2midpoints.json",
+        "Camera3midpoints.json",
+        "Camera4midpoints.json",
+    ]
+
+    midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
+    tracks = run_tracking(jsonfilename, midpoints_per_frame)
+    tracks_per_camera = [run_tracking(filename, midpoints_per_frame) for filename in jsonfilenames]
+
 
     for id in active_ids
         predict!(tracks[id].kf)
@@ -255,4 +291,29 @@ function test_state()
         col .= tracks[id].kf.x[1:2]
     end
     prediction_points[:, unmatched_track_ids]
+
+    # tracks3 : 2231, 308, 1356 reihenfolge: 308, 1356, 2231
+    itrack = Track(
+        # next_id,
+        init_kf(tracks_per_camera[3][308].history[1]),
+        1,
+        1,
+        1,
+        0,
+        [tracks_per_camera[3][308].history[1]]
+    )   
+    for i in 2:7
+        predict!(itrack.kf)
+        update!(itrack.kf, tracks_per_camera[3][308].history[i])
+    end
+    predict!(itrack.kf)
+
+end
+
+function filter_tracks_by_rect(tracks, x, y, w, h)
+    point_inside_rect(px, py, x, y, w, h) = px>=x && py >=y && px <=x+w && py <=y+h
+    track_inside_rect(track, x, y, w, h) = any([point_inside_rect(point..., x, y, w, h) for point in track.history])
+
+    tracks_inside = filter(pair->track_inside_rect(pair.second, 1200, 1500, 100, 200), tracks3)
+    return tracks_inside
 end
