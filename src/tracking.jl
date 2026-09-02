@@ -129,7 +129,7 @@ function associate(active_ids::Vector{Int}, tracks::Dict{Int, Track}, midpoints:
     associations = zeros(Int, length(active_ids))
     # unmatched_track_ids = Int[]
 
-    for gate_dist in [30.0, 15.0, 10.0, 5.0, 2.0]
+    for gate_dist in [30.0, 10.0, 5.0]
         for (index, track_id) in enumerate(active_ids)
             if !iszero(associations[index])
                 continue
@@ -159,10 +159,12 @@ function associate(active_ids::Vector{Int}, tracks::Dict{Int, Track}, midpoints:
     return associations, unmatched_track_ids, unmatched_detection_ids
 end
 
-function run_tracking(jsonfilename, midpoints_per_frame)
+function run_tracking(midpoints_per_frame; nsteps=nothing)
     tracks = Dict{Int, Track}()
     active_ids = Int[]
-    for (frameind, midpoints) in ProgressBar(enumerate(midpoints_per_frame))
+
+    iter = isnothing(nsteps) ? midpoints_per_frame : Iterators.take(midpoints_per_frame, nsteps)
+    for (frameind, midpoints) in ProgressBar(enumerate(iter))
         # println("analysing frame $frameind")
         # prediction
         for id in active_ids
@@ -244,20 +246,22 @@ function visualise_tracks(imagefilename, tracks)
     scatter!(ax, midpoints_per_frame[6])
     scatter!(ax, midpoints_per_frame[7])
     scatter!(ax, midpoints_per_frame[8])
-    # scatter!(ax, midpoints_per_frame[5])
     # plot!(ax, tracks[1].history)
     # plot!(ax, tracks[2].history)
     # plot!(ax, tracks[3].history)
     plot!(ax, tracks[4].history)
-    # h4 = tracks[4].history
-    # m4 = reinterpret(reshape, Float32, h4)
-    # @views lines!(ax, m4[1, :], m4[2, :])
-    for i in eachindex(tracks)
-        h = tracks[i].history
-        m = reinterpret(reshape, Float32, h)
-        @views lines!(ax, m[1, :], m[2, :])
-        # lines!(ax, tracks[i].history)
-    end
+
+    tracks = tracks_per_camera[3]
+    x = reduce(vcat, (
+        vcat(reinterpret(reshape, Float32, t.second.history)[1, :], NaN32)
+        for t in tracks
+    ))
+    y = reduce(vcat, (
+        vcat(reinterpret(reshape, Float32, t.second.history)[2, :], NaN32)
+        for t in tracks
+    ))
+
+    lines!(ax, x, y)
 
     # from associate
     scatter!(ax, prediction_points[:, unmatched_track_ids], color=:red)
@@ -278,10 +282,15 @@ function test_state()
         "Camera4midpoints.json",
     ]
 
+    nsteps = 50
     midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
-    tracks = run_tracking(jsonfilename, midpoints_per_frame)
-    tracks_per_camera = [run_tracking(filename, midpoints_per_frame) for filename in jsonfilenames]
+    tracks = run_tracking(midpoints_per_frame, nsteps=nsteps)
 
+    tracks_per_camera = [
+        run_tracking(
+            JSON.parsefile(filename, Vector{Vector{SVector{2,Float32}}}),
+            nsteps=nsteps) for filename in jsonfilenames
+    ]
 
     for id in active_ids
         predict!(tracks[id].kf)
