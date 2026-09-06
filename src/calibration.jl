@@ -713,8 +713,6 @@ function write_blender_json(theta, detections_list, intersections_list)
     return json
 end
 
-detections_list, intersections_list = detect_and_intersect()
-
 function run_calibration(detections_list, intersections_list)
     free_parameters, fixed_parameters = initial_guess()
     # theta = merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
@@ -738,8 +736,13 @@ function run_calibration(detections_list, intersections_list)
 
     println(sol)
 
-    thetasol = merge_free_and_fixed_parameters(sol.u, fixed_parameters)
-    write_blender_json(thetasol, detections_list, intersections_list)
+    theta = merge_free_and_fixed_parameters(sol.u, fixed_parameters)
+    write_blender_json(theta, detections_list, intersections_list)
 
     return sol
 end
+
+# detections_list, intersections_list = detect_and_intersect()
+# sol = run_calibration(detections_list, intersections_list)
+# free_parameters, fixed_parameters = initial_guess()
+# theta = merge_free_and_fixed_parameters(sol.u, fixed_parameters)

@@ -9,7 +9,12 @@ using FileIO
 include("calibration.jl")
 
 function load_midpoints(filenames::Vector{String})
-    return [JSON.parsefile(f, Vector{Vector{SVector{2,Float32}}}) for f in filenames]
+    parsed_points = [JSON.parsefile(f, Vector{Vector{SVector{2,Float32}}}) for f in filenames]
+    return map(parsed_points) do camera
+        map(camera) do frame
+            map(p -> SVector(p[2], p[1]), frame)
+        end
+    end 
 end
 
 function rays_for_frame(midpoints_per_camera, frame::Int, theta, n1, n2)

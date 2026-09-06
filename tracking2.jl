@@ -13,7 +13,7 @@ using NearestNeighbors
 using ProgressBars
 using Statistics
 
-include("calibration.jl")
+include("calibartion.jl")
 
 const MAX_MISSES = 3
 const GATE_DIST = 15 # px
@@ -68,7 +68,7 @@ function predict!(kf::KalmanFilter)
 end
 
 function out_of_frame(x)
-    return x[1] < 0 || x[1] > 2560 || x[2] < 0 || x[2] > 1600
+    return x[1] < 0 || x[1] > 1600 || x[2] < 0 || x[2] > 2560
 end
 
 # v0 = (p1 - p0)/Δt = p1-p0
@@ -78,7 +78,7 @@ function init_kf(detection::SVector{2, Float32})::KalmanFilter
     σ_pos = 3
     σ_v = sqrt(2)*σ_pos #Δt = 1/1frame
     return KalmanFilter(
-        [detection..., 5, 0], # TODO about 5px/frame mean upwards velocity
+        [detection..., 0, 5], # TODO about 5px/frame mean upwards velocity
         [
             σ_pos^2 0 0 0; # TODO improve guess for these values
             0 σ_pos^2 0 0;
@@ -247,13 +247,13 @@ function mean_point_and_distance(r1::Ray, r2::Ray)
     )
 end
 
-function triangulate_tracks(trackA::Track, trackB::Track,
+function triangulate_tracks(track1::Track, track2::Track,
                             camind1::Int, camind2::Int,
                             theta)# ::Vector{SVector{3,Float32}}
-    start1, start2, l1, l2 = trackA.start_frame, trackB.start_frame, length(trackA.history), length(trackB.history)
-    common_timerange = intersect(start1:(start1+l1-1), start2:(start2+l2-1))
-    common_range_1 = intersect(1:l1, (start2 - start1 + 1):(start2 + l2 - start1))
-    common_range_2 = intersect(1:l2, (start1 - start2 + 1):(start1 + l1 - start2))
+    start1, start2, l1, l2 = track1.start_frame, track2.start_frame, length(track1.history), length(track2.history)
+    common_timerange = intersect(start1:(start1+l1), start2:(start2+l2))
+    common_range_1 = intersect(1:l1, (start2 - start1+2):(start2 + l2 - start1 + 2))
+    common_range_2 = intersect(1:l2, (start1 - start2+1):(start1 + l1 - start2 + 1))
     if length(common_range_1) == 0
         return SVector{3, Float32}[], MVector{0, Float32}(), 0:0
     end
@@ -262,12 +262,10 @@ function triangulate_tracks(trackA::Track, trackB::Track,
 
     points3d = SVector{3, Float32}[]
     dists = MVector{length(common_range_1), Float32}(undef)
-    for (i, (point1, point2)) in enumerate(zip(trackA.history[common_range_1], trackB.history[common_range_2]))
+    for (i, (point1, point2)) in enumerate(zip(track1.history[common_range_1], track2.history[common_range_2]))
         r1 = waterray_from_camera(point1..., theta, camind1, n1, n2)
         r2 = waterray_from_camera(point2..., theta, camind2, n1, n2)
         mean_point, dist = mean_point_and_distance(r1, r2)
-        # p1, p2, dist = closest_points_and_distance(r1, r2)
-        # mean_point = (p1+p2)/2
         # if dist > DIST_GATE
         #     return nothing
         # end
@@ -290,21 +288,19 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
     SEARCH_RADIUS = 10
 
     # (frameind, camind) -> KDTree
-    KDTrees = Dict{Tuple{Int, Int}, KDTree}()
+    KDTrees::Dict{Tuple{Int, Int}, KDTree} = Dict()
     
-    for track2 in Iterators.take(tracks2, 10) # TODO remove
+    for track2 in Iterators.take(tracks2, 10)
         for track4 in tracks4
             points3d, dists, common_timerange = triangulate_tracks(track2.second, track4.second, 2, 4, theta)
-            if length(points3d) < 2 || median(abs.(dists)) > 5e-3 # 1 mm gate
+            if length(points3d) < 2 || median(dists) > 2e-3 # 2 mm gate
                 continue
             end
             # define search frame index and 
             # search in cam 1 and 3
 
-            # take the first and last points as indicator points
             important_frameinds = @view common_timerange[1:length(common_timerange)-1:end]
             important_points3d = @view points3d[1:length(points3d)-1:end]
-
             closest_track_indices = Int[]
             for (frameind, point3d) in zip(important_frameinds, important_points3d) # camera 3
                 if !haskey(KDTrees, (frameind, 3))
@@ -312,14 +308,8 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
                 end
 
                 projected_point = project_point_onto_image_plane(point3d, 3, theta)
-                scatter!(ax3, projected_point, color=:red)
 
-                closest_track_indices, distances = knn(KDTrees[(frameind, 3)], projected_point, 1) # only the nearest neighbor
-                closest_track_index = closest_track_indices[1]
-                if any(distances .> 10)
-                    push!(closest_track_indices, -1) # ruin the allequal check
-                    break
-                end
+                closest_track_index = knn(KDTrees[(frameind, 3)], projected_point, 1)[1][1] # only the nearest neighbor
                 push!(closest_track_indices, closest_track_index)
 
                 # if length(tracks3indices) > 0
@@ -330,9 +320,6 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
             if allequal(closest_track_indices)
                 # we have a match!
                 println("from 2: $(track2.first), from 3: $(closest_track_indices[1]), from 4: $(track4.first)")
-                lines!(ax4, track4.second)
-                lines!(ax3, tracks3[closest_track_indices[1]])
-                break
             end
         end # tracks4
     end # tracks2
@@ -341,7 +328,7 @@ end
 function GLMakie.lines!(ax, track::Track; kwargs...)
     GLMakie.lines!(ax, track.history, kwargs...)
 end
-function GLMakie.lines!(ax, tracks::Dict{Int64, Track}; transpose=false, kwargs...)
+function GLMakie.lines!(ax, tracks::Dict{Int64, Track}; kwargs...)
     x = @views reduce(vcat, (
         vcat(reinterpret(reshape, Float32, t.second.history)[1, :], NaN32)
         for t in tracks
@@ -352,7 +339,7 @@ function GLMakie.lines!(ax, tracks::Dict{Int64, Track}; transpose=false, kwargs.
     ))
 
     # lines!(ax3, x, y, alpha=0.3)
-    transpose ? lines!(ax, y, x, kwargs...) : lines!(ax, x, y, kwargs...)
+    lines!(ax, x, y, kwargs...)
 end
 
 function visualise_tracks(imagefilename, tracks)
@@ -407,12 +394,12 @@ function test_state()
     ]
 
     nsteps = 50
-    midpoints_per_camera_per_frame = load_midpoints(jsonfilenames)
+    # midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
 
     tracks_per_camera = [
         run_tracking(
-            midpoints_per_frame,
-            nsteps=nsteps) for midpoints_per_frame in midpoints_per_camera_per_frame
+            JSON.parsefile(filename, Vector{Vector{SVector{2,Float32}}}),
+            nsteps=nsteps) for filename in jsonfilenames
     ]
     # filtering!
     tracks_per_camera = [
@@ -461,18 +448,75 @@ function test_state()
     ax3 = Makie.Axis(fig[2, 1], aspect = DataAspect(), title="Camera 3 matched tracks from triangulations")
     ax4 = Makie.Axis(fig[2, 2], aspect = DataAspect(), title="Camera 4 matched tracks from epipolar lines")
     for (ax, image) in zip([ax1, ax2, ax3, ax4], images)
-        image!(ax, image)
+        image!(ax, transpose(image))
     end
 
     # lines!(ax2, tracks_per_camera[2], alpha = 0.2)
-    track2 = tracks_per_camera[2][3]
-    lines!(ax2, track2)
+    # lines!(ax1, tracks_per_camera[1])
+    # lines!(ax2, tracks_per_camera[2])
+    # lines!(ax3, tracks_per_camera[3])
+    # lines!(ax4, tracks_per_camera[4])
 
-    scatter!(ax2, midpoints_per_frame[1])
+    track2 = Pair(5, tracks2[5])
+    lines!(ax2, track2.second)
+
+    track4 = Pair(687, tracks4[1103])
+    track4 = Pair(1291, tracks4[1291])
+    track4 = Pair(1212, tracks4[1212])
+    track4 = Pair(1179, tracks4[1179])
+    track4 = Pair(2224, tracks_per_camera[4][2224])
+    track4 = Pair(3117, tracks_per_camera[4][3117])
+    track4 = Pair(603, tracks_per_camera[4][603])
+    lines!(ax4, track4.second)
+
+    trackA = track2.second
+    trackB = track4.second
+
+    projected_points = project_pointcloud_onto_image_plane(points3d, 3, theta)
+    lines!(ax3, projected_points, color=:red)
+    
+    # lines!(ax2, tracks2, transpose=true)
+    # lines!(ax2, track2.second)
+
+    # lines!(ax4, track4.second)
+
+    scatter!(ax2, midpoints_per_camera_per_frame[2][1])
+    scatter!(ax3, midpoints_per_camera_per_frame[3][1])
 
     # individual tracks
-    lines!(ax2, tracks_per_camera[2][4])
+    lines!(ax2, tracks_per_camera[2][5])
+    lines!(ax3, tracks_per_camera[3][2159])
     
+end
+
+
+function debug_3d()
+    fig3d = Figure()
+    ax3d = Makie.Axis3(fig3d[1, 1], aspect = :data)
+    lines!([r1.p, r1.p+r1.n*1])
+    lines!([r2.p, r2.p+r2.n])
+    scatter!([p1, p2])
+    scatter!(theta.cameraposes[:, 4:6])
+
+    corner_points = [[0, 0], [2560, 0], [2560, 1600], [0, 1600]]
+    view_window_points = [[], []]
+    for p in corner_points
+        rc2 = waterray_from_camera(p..., theta, 2, 1.0, 1.33)
+        rc4 = waterray_from_camera(p..., theta, 4, 1.0, 1.33)
+
+        push!(view_window_points[1], rc2.p)
+        push!(view_window_points[2], rc4.p)
+
+        lines!([rc2.p, rc2.p+rc2.n], color=:black)
+        lines!([rc4.p, rc4.p+rc4.n], color=:black)
+    end
+    spargerray2 = waterray_from_camera(0, 800, theta, 2, 1.0, 1.33)
+    spargerray4 = waterray_from_camera(0, 800, theta, 4, 1.0, 1.33)
+    lines!([spargerray2.p, spargerray2.p + spargerray2.n])
+    lines!([spargerray4.p, spargerray4.p + spargerray4.n])
+
+    lines!([view_window_points[1]..., view_window_points[1][1]], color=:black)
+    lines!([view_window_points[2]..., view_window_points[2][1]], color=:black)
 end
 
 function filter_tracks_by_rect(tracks, x, y, w, h)
