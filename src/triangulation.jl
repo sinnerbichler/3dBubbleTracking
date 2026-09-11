@@ -73,6 +73,11 @@ function project_point_onto_image_plane(point::SVector{3,T}, cameraind, theta) w
     return @SVector[px, py]
 end
 
+function epipolar_curve(x, y, lengths, from_camind::Int, to_camind::Int, theta)
+    ray = waterray_from_camera(x, y, theta, from_camind, 1.0, 1.33)
+    return project_pointcloud_onto_image_plane([ray.p + ray.n*l for l in lengths], to_camind, theta)
+end
+
 function reconstruct_refraction_point_from_start_end_points(p1::SVector{3,T}, p2::SVector{3,T}, interface::Interface{T}, n1, n2) where {T<:Real}
     pxc::SVector{3,T} = intersect_ray_with_interface(Ray(interface.n, p1), interface)
     pxp::SVector{3,T} = intersect_ray_with_interface(Ray(interface.n, p2), interface)

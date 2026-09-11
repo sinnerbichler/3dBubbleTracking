@@ -350,18 +350,23 @@ function visualise_tracks(imagefilename, tracks)
     image!(ax, image)
     scatter!(ax, midpoints_per_frame[1], color=:blue)
     scatter!(ax, midpoints_per_frame[2], color=:orange)
-    scatter!(ax, midpoints_per_frame[3])
-    scatter!(ax, midpoints_per_frame[4])
-    scatter!(ax, midpoints_per_frame[5])
-    scatter!(ax, midpoints_per_frame[6])
-    scatter!(ax, midpoints_per_frame[7])
-    scatter!(ax, midpoints_per_frame[8])
+    scatter!(ax, midpoints_per_frame[3], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[4], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[5], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[6], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[7], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[8], color=:blue, alpha=0.3)
+
+    scatter!(ax, midpoints_per_frame[21], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[22], color=:blue, alpha=0.3)
+    scatter!(ax, midpoints_per_frame[23], color=:blue, alpha=0.3)
     # plot!(ax, tracks[1].history)
     # plot!(ax, tracks[2].history)
     # plot!(ax, tracks[3].history)
     plot!(ax, tracks[4].history)
 
-    tracks = tracks_per_camera[3]
+    # tracks = tracks_per_camera[3]
+    lines!(ax, tracks)
     x = reduce(vcat, (
         vcat(reinterpret(reshape, Float32, t.second.history)[1, :], NaN32)
         for t in tracks
@@ -372,7 +377,8 @@ function visualise_tracks(imagefilename, tracks)
     ))
 
     # lines!(ax3, x, y, alpha=0.3)
-    lines!(ax, x, y, alpha=0.3)
+    lines!(ax, x, y, alpha=1.0, color=:blue)
+    scatter!(ax, x, y, alpha=0.4, color=:black)
 
     # from associate
     scatter!(ax, prediction_points[:, unmatched_track_ids], color=:red)
@@ -395,11 +401,13 @@ function test_state()
 
     nsteps = 50
     # midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
+    midpoints_per_camera_per_frame = load_midpoints(jsonfilenames)
+    tracks = run_tracking(midpoints_per_camera_per_frame[3]; nsteps)
 
     tracks_per_camera = [
         run_tracking(
-            JSON.parsefile(filename, Vector{Vector{SVector{2,Float32}}}),
-            nsteps=nsteps) for filename in jsonfilenames
+            midpoints_per_frame,
+            nsteps=nsteps) for midpoints_per_frame in midpoints_per_camera_per_frame
     ]
     # filtering!
     tracks_per_camera = [
@@ -431,6 +439,12 @@ function test_state()
     #     update!(itrack.kf, tracks_per_camera[3][308].history[i])
     # end
     # predict!(itrack.kf)
+    imagefilenames = "/home/simon/mega/masterarbeit/calib/" .* [
+        "Camera 10509.tif",
+        "Camera 20509.tif",
+        "Camera30509.tif",
+        "Camera 40509.tif",
+    ]
 
 
     casepath = "/home/simon/mega/masterarbeit/fullrun3_200/"
@@ -443,12 +457,12 @@ function test_state()
     images = [load(filename)[1:1600, :] for filename in imagefilenames]
 
     fig = Figure()
-    ax1 = Makie.Axis(fig[1, 1], aspect = DataAspect(), title="Camera 1 matched tracks from triangulations")
-    ax2 = Makie.Axis(fig[1, 2], aspect = DataAspect(), title="Camera 2 selected track")
-    ax3 = Makie.Axis(fig[2, 1], aspect = DataAspect(), title="Camera 3 matched tracks from triangulations")
-    ax4 = Makie.Axis(fig[2, 2], aspect = DataAspect(), title="Camera 4 matched tracks from epipolar lines")
+    ax1 = Makie.Axis(fig[1, 1], aspect = DataAspect(), title="Camera 1 matched tracks from triangulations", yreversed = true)
+    ax2 = Makie.Axis(fig[1, 2], aspect = DataAspect(), title="Camera 2 selected track", yreversed = true)
+    ax3 = Makie.Axis(fig[2, 1], aspect = DataAspect(), title="Camera 3 matched tracks from triangulations", yreversed = true)
+    ax4 = Makie.Axis(fig[2, 2], aspect = DataAspect(), title="Camera 4 matched tracks from epipolar lines", yreversed = true)
     for (ax, image) in zip([ax1, ax2, ax3, ax4], images)
-        image!(ax, transpose(image))
+        image!(ax, transpose(image), uv_transform = :flip_y)
     end
 
     # lines!(ax2, tracks_per_camera[2], alpha = 0.2)
@@ -457,7 +471,8 @@ function test_state()
     # lines!(ax3, tracks_per_camera[3])
     # lines!(ax4, tracks_per_camera[4])
 
-    track2 = Pair(5, tracks2[5])
+    track2id = 6
+    track2 = Pair(track2id, tracks2[track2id])
     lines!(ax2, track2.second)
 
     track4 = Pair(687, tracks4[1103])
@@ -467,14 +482,39 @@ function test_state()
     track4 = Pair(2224, tracks_per_camera[4][2224])
     track4 = Pair(3117, tracks_per_camera[4][3117])
     track4 = Pair(603, tracks_per_camera[4][603])
+    track4 = Pair(391, tracks_per_camera[4][391])
     lines!(ax4, track4.second)
 
     trackA = track2.second
     trackB = track4.second
 
+    # projection to camera 3
     projected_points = project_pointcloud_onto_image_plane(points3d, 3, theta)
     lines!(ax3, projected_points, color=:red)
+    close_tracks3 = filter_tracks_by_rect(tracks3, 1090, 800, 50, 400)
+    close_tracks3 = filter_tracks_by_rect(tracks3, 1215, 878, 10, 4)
+    lines!(ax3, close_tracks3)
+    # projection to camera 1
+    projected_points = project_pointcloud_onto_image_plane(points3d, 1, theta)
+    lines!(ax1, projected_points, color=:red)
+    close_tracks1 = filter_tracks_by_rect(tracks1, 1000, 900, 400, 100)
+    lines!(ax1, close_tracks1)
+
+    interesting_tracks = filter_tracks_by_rect(tracks3, 1070, 865, 30, 5)
+    interesting_track = tracks3[2703]
     
+
+    # project spargercenter onto 1 and 3
+    r2 = waterray_from_camera(100, 800, theta, 2, 1.0, 1.33)
+    r4 = waterray_from_camera(45, 750, theta, 4, 1.0, 1.33)
+    r2 = waterray_from_camera(100, 670, theta, 2, 1.0, 1.33)
+    r4 = waterray_from_camera(45, 750, theta, 4, 1.0, 1.33)
+    mean_point, dist = mean_point_and_distance(r2, r4)
+    p1 = project_point_onto_image_plane(mean_point, 1, theta)
+    p3 = project_point_onto_image_plane(mean_point, 3, theta)
+    scatter!(ax1, p1, color=:red)
+    scatter!(ax3, p3, color=:red)
+
     # lines!(ax2, tracks2, transpose=true)
     # lines!(ax2, track2.second)
 

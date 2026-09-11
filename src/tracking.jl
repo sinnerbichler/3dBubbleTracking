@@ -75,7 +75,7 @@ end
 # Cov(p1) = Cov(p0) = R
 # Cov(v0) = 1/Δt^2 Cov(p1-p0) = 2R/Δt^2
 function init_kf(detection::SVector{2, Float32})::KalmanFilter
-    σ_pos = 3
+    σ_pos = 1
     σ_v = sqrt(2)*σ_pos #Δt = 1/1frame
     return KalmanFilter(
         [detection..., 5, 0], # TODO about 5px/frame mean upwards velocity
@@ -160,8 +160,7 @@ function associate(active_ids::Vector{Int}, tracks::Dict{Int, Track}, midpoints:
         end # for (index, track_id) in enumerate(active_ids)
     end # for gate dist
 
-    unmatched_track_ids = findall(iszero, associations)
-    # matched_track_ids = findall(i->!iszero, associations)
+    unmatched_track_ids = active_ids[findall(iszero, associations)]
     unmatched_detection_ids = findall(index->!(index in associations), eachindex(midpoints))
 
     return associations, unmatched_track_ids, unmatched_detection_ids
@@ -298,6 +297,11 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
             if length(points3d) < 2 || median(abs.(dists)) > 5e-3 # 1 mm gate
                 continue
             end
+            println("candidate in tracks4 found: $(track4.first)")
+            points1 = project_pointcloud_onto_image_plane(points3d, 1, theta)
+            points3 = project_pointcloud_onto_image_plane(points3d, 3, theta)
+            lines!(ax1, points1, color=:blue, alpha=0.5)
+            lines!(ax3, points3, color=:blue, alpha=0.5)
             # define search frame index and 
             # search in cam 1 and 3
 
@@ -330,8 +334,8 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
             if allequal(closest_track_indices)
                 # we have a match!
                 println("from 2: $(track2.first), from 3: $(closest_track_indices[1]), from 4: $(track4.first)")
-                lines!(ax4, track4.second)
-                lines!(ax3, tracks3[closest_track_indices[1]])
+                # lines!(ax4, track4.second)
+                # lines!(ax3, tracks3[closest_track_indices[1]])
                 break
             end
         end # tracks4
@@ -356,19 +360,19 @@ function GLMakie.lines!(ax, tracks::Dict{Int64, Track}; transpose=false, kwargs.
 end
 
 function visualise_tracks(imagefilename, tracks)
-    image = load(imagefilename)[1:1600, :]
+    image = transpose(load(imagefilename)[1:1600, :])
 
     fig = Figure()
     ax = Makie.Axis(fig[1, 1], aspect = DataAspect(), title="Camera 3 reprojections")
     image!(ax, image)
     scatter!(ax, midpoints_per_frame[1], color=:blue)
     scatter!(ax, midpoints_per_frame[2], color=:orange)
-    scatter!(ax, midpoints_per_frame[3])
-    scatter!(ax, midpoints_per_frame[4])
-    scatter!(ax, midpoints_per_frame[5])
-    scatter!(ax, midpoints_per_frame[6])
-    scatter!(ax, midpoints_per_frame[7])
-    scatter!(ax, midpoints_per_frame[8])
+    scatter!(ax, midpoints_per_frame[3], alpha=0.2, color=:black)
+    scatter!(ax, midpoints_per_frame[4], alpha=0.2, color=:black)
+    scatter!(ax, midpoints_per_frame[5], alpha=0.2, color=:black)
+    scatter!(ax, midpoints_per_frame[6], alpha=0.2, color=:black)
+    scatter!(ax, midpoints_per_frame[7], alpha=0.2, color=:black)
+    scatter!(ax, midpoints_per_frame[8], alpha=0.2, color=:black)
     # plot!(ax, tracks[1].history)
     # plot!(ax, tracks[2].history)
     # plot!(ax, tracks[3].history)
@@ -415,6 +419,9 @@ function test_state()
             nsteps=nsteps) for midpoints_per_frame in midpoints_per_camera_per_frame
     ]
     # filtering!
+    tracks_per_camera = [
+        filter!(pair->pair.second.hits > 4, tracks) for tracks in tracks_per_camera
+    ]
     tracks_per_camera = [
         filter!(pair->length(pair.second.history) > 4, tracks) for tracks in tracks_per_camera
     ]
@@ -475,11 +482,11 @@ function test_state()
     
 end
 
-function filter_tracks_by_rect(tracks, x, y, w, h)
+function filter_tracks_by_rect(tracks, x, y, w, h; take_any=true)
     point_inside_rect(px, py, x, y, w, h) = px>=x && py >=y && px <=x+w && py <=y+h
-    track_inside_rect(track, x, y, w, h) = any([point_inside_rect(point..., x, y, w, h) for point in track.history])
+    track_inside_rect(track, x, y, w, h) = take_any ? any([point_inside_rect(point..., x, y, w, h) for point in track.history]) : any([point_inside_rect(point..., x, y, w, h) for point in track.history])
 
-    tracks_inside = filter(pair->track_inside_rect(pair.second, 1200, 1500, 100, 200), tracks3)
+    tracks_inside = filter(pair->track_inside_rect(pair.second, x, y, w, h), tracks)
     return tracks_inside
 end
 
@@ -488,3 +495,78 @@ end
 # from 2: 1703, from 3: 4214, from 4: 330
 # from 2: 1703, from 3: 45, from 4: 2911
 # from 2: 1703, from 3: 4291, from 4: 2784
+#
+
+function triangluationtest()
+    tracks1, tracks2, tracks3, tracks4 = tracks_per_camera
+
+    track2id = 9
+    track2 = Pair(track2id, tracks2[track2id])
+    lines!(ax2, track2.second)
+
+    # epipolar lines
+    lengths = 0.05:0.025:0.2
+    lines!(ax1, epipolar_curve(track2.second.history[1]..., lengths, 2, 1, theta))
+    lines!(ax3, epipolar_curve(track2.second.history[1]..., lengths, 2, 3, theta))
+    lines!(ax4, epipolar_curve(track2.second.history[1]..., lengths, 2, 4, theta))
+
+    points1 = midpoints_per_camera_per_frame[1][1]
+    points3 = midpoints_per_camera_per_frame[3][1]
+    points4 = midpoints_per_camera_per_frame[4][1]
+    scatter!(ax1, points1, color=:green, alpha=0.4)
+    scatter!(ax3, points3, color=:green, alpha=0.4)
+    scatter!(ax4, points4, color=:green, alpha=0.4)
+
+    tree1 = KDTree(points1)
+    tree3 = KDTree(points3)
+
+    ray2 = waterray_from_camera(track2.second.history[1]..., theta, 2, 1.0, 1.33)
+    close_points_4 = []
+    for midpoint in points4
+        ray4 = waterray_from_camera(midpoint..., theta, 4, 1.0, 1.33)
+        # p2, _, distance = closest_points_and_distance(ray2, ray4) # or mean_point_and_distance?
+        p2, distance = mean_point_and_distance(ray2, ray4)
+
+        if abs(distance) >= 1e-3
+            continue
+        end
+        push!(close_points_4, midpoint)
+
+        # reproject onto 1 and 3
+        p1 = project_point_onto_image_plane(p2, 1, theta)
+        p3 = project_point_onto_image_plane(p2, 3, theta)
+
+        scatter!(ax1, p1, color=:blue)
+        scatter!(ax3, p3, color=:blue)
+    end
+    scatter!(ax4, close_points_4, color=:red)
+    # scatter!(ax4, close_points_4, color=:black)
+
+    # for midpoint in close_points_4
+    #     ray4 = waterray_from_camera(midpoint..., theta, 4, 1.0, 1.33)
+
+    # end
+
+    # triangulation by hand
+    p1 = @SVector[397, 880]
+    p2 = track2.second.history[1]
+    # p2 = @SVector[397, 880]
+    p3 = @SVector[460, 835] # jackpot!!!!
+    p4 = @SVector[2427, 216]
+
+    r1 = waterray_from_camera(p1..., theta, 1, 1.0, 1.33)
+    r2 = waterray_from_camera(p2..., theta, 2, 1.0, 1.33)
+    r3 = waterray_from_camera(p3..., theta, 3, 1.0, 1.33)
+    r4 = waterray_from_camera(p4..., theta, 4, 1.0, 1.33)
+    pd, d = mean_point_and_distance(r1, r3)
+
+    p1 = project_point_onto_image_plane(pd, 1, theta)
+    p2 = project_point_onto_image_plane(pd, 2, theta)
+    p3 = project_point_onto_image_plane(pd, 3, theta)
+    p4 = project_point_onto_image_plane(pd, 4, theta)
+    
+    scatter!(ax1, p1, color=:yellow)
+    scatter!(ax2, p2, color=:yellow)
+    scatter!(ax3, p3, color=:yellow)
+    scatter!(ax4, p4, color=:yellow)
+end
