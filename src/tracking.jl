@@ -14,6 +14,7 @@ using ProgressBars
 using Statistics
 
 include("calibration.jl")
+include("triangulation.jl")
 
 const MAX_MISSES = 3
 const GATE_DIST = 15 # px
@@ -359,6 +360,233 @@ function GLMakie.lines!(ax, tracks::Dict{Int64, Track}; transpose=false, kwargs.
     transpose ? lines!(ax, y, x, kwargs...) : lines!(ax, x, y, kwargs...)
 end
 
+# per-frame multi-view correspondence for 4-camera bubble detections
+# pairwise-seeded, multi-view-verified, greedy consensus matching (cf. Maas, Gruen & Papantoniou 1993)
+# expects waterray_from_camera, mean_point_and_distance, project_point_onto_image_plane
+# from calibration.jl (already in your codebase)
+
+# """
+#     match_bubbles(midpoints, theta; dist_gate=3e-3, reproj_gate=5.0f0)
+
+# `midpoints[cam]` = detections of one frame for that camera (Vector{SVector{2,Float32}}), cam in 1:4.
+# Returns a Vector{NTuple{4,Int}}: one entry per matched bubble, index per camera (0 = not seen there).
+
+# - dist_gate: max allowed ray-intersection residual, world units (reuse whatever you already gate on
+#   in triangulate_tracks / associate_tracks / triangluationtest, e.g. 1e-3 to 5e-3).
+# - reproj_gate: max reprojection error, pixels, for accepting a 3rd/4th-camera detection as support.
+# """
+# function match_bubbles(midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}}, frameind::Int, theta;
+#                         dist_gate=3e-3, reproj_gate=5.0f0)
+#     ncams = length(midpoints_per_camera_per_frame) # assumed 4 below (NTuple{4,Int})
+#     rays  = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in midpoints_per_camera_per_frame[c][frameind]] for c in 1:ncams]
+#     trees = [KDTree(midpoints_per_camera_per_frame[c][frameind]) for c in 1:ncams]
+
+#     proposals = NTuple{4,Int}[]
+#     scores    = Float32[]
+
+#     for a in 1:ncams, b in a+1:ncams, i in eachindex(rays[a]), j in eachindex(rays[b])
+#         p3d, d = mean_point_and_distance(rays[a][i], rays[b][j])
+#         abs(d) > dist_gate && continue
+
+#         tup = zeros(Int, ncams)
+#         tup[a] = i; tup[b] = j
+#         for c in setdiff(1:ncams, (a, b))
+#             idx, dist = knn(trees[c], project_point_onto_image_plane(p3d, c, theta), 1)
+#             dist[1] < reproj_gate && (tup[c] = idx[1])
+#         end
+#         push!(proposals, Tuple(tup))
+#         push!(scores, count(!=(0), tup) - abs(d) / dist_gate) # more supporting views > tighter residual
+#     end
+
+#     used = [falses(length(midpoints_per_camera_per_frame[c][frameind])) for c in 1:ncams]
+#     accepted = NTuple{4,Int}[]
+#     for k in sortperm(scores, rev=true)
+#         tup = proposals[k]
+#         any(tup[c] != 0 && used[c][tup[c]] for c in 1:ncams) && continue
+#         for c in 1:ncams
+#             tup[c] != 0 && (used[c][tup[c]] = true)
+#         end
+#         push!(accepted, tup)
+#     end
+#     return accepted
+# end
+
+# """
+#     match_bubbles(midpoints, theta; dist_gate=3e-3, reproj_gate=5.0f0, require_full=true)
+
+# Occlusion-aware: a detection is NOT claimed exclusively by one bubble — a single 2D blob can
+# legitimately be the merged image of several bubbles lined up behind each other in that camera's
+# view. Ghost rejection therefore comes from requiring agreement across all 4 cameras
+# (require_full=true) rather than from uniqueness of the assignment; redundant proposals found via
+# different seed pairs are deduplicated via the Set.
+
+# `midpoints[cam]` = detections of one frame for that camera (Vector{SVector{2,Float32}}), cam in 1:4.
+# Returns a Vector{NTuple{4,Int}}. With require_full=false, 0 marks "not seen in that camera".
+
+# - dist_gate: max allowed ray-intersection residual, world units (reuse whatever you already gate on
+#   in triangulate_tracks / associate_tracks / triangluationtest, e.g. 1e-3 to 5e-3).
+# - reproj_gate: max reprojection error, pixels, for accepting a 3rd/4th-camera detection as support.
+# """
+# function match_bubbles(midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}}, frameind::Int, theta;
+#                         dist_gate=3e-3, reproj_gate=5.0f0)
+#     ncams = length(midpoints_per_camera_per_frame) # assumed 4 below (NTuple{4,Int})
+#     rays  = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in midpoints_per_camera_per_frame[c][frameind]] for c in 1:ncams]
+#     trees = [KDTree(midpoints_per_camera_per_frame[c][frameind]) for c in 1:ncams]
+
+#     accepted = Set{NTuple{4,Int}}()
+
+#     for a in 1:ncams, b in a+1:ncams, i in eachindex(rays[a]), j in eachindex(rays[b])
+#         p3d, d = mean_point_and_distance(rays[a][i], rays[b][j])
+#         abs(d) > dist_gate && continue
+
+#         tup = zeros(Int, ncams)
+#         tup[a] = i; tup[b] = j
+#         for c in setdiff(1:ncams, (a, b))
+#             idx, dist = knn(trees[c], project_point_onto_image_plane(p3d, c, theta), 1)
+#             dist[1] < reproj_gate && (tup[c] = idx[1])
+#         end
+
+#         any(==(0), tup) && continue
+#         # count(==(0), tup) > 1 && continue
+#         push!(accepted, Tuple(tup))
+#     end
+
+#     return collect(accepted)
+# end
+
+# per-frame multi-view correspondence for 4-camera bubble detections
+# pairwise-seeded, multi-view-verified, greedy consensus matching (cf. Maas, Gruen & Papantoniou 1993)
+
+# expects waterray_from_camera, mean_point_and_distance, project_point_onto_image_plane
+# from calibration.jl (already in your codebase)
+
+# """
+#     match_bubbles(midpoints_per_camera_per_frame, frameind, theta;
+#                   seed_gate=15.0f0, accept_gate=15.0f0, dist_gate=1e-2)
+
+# Occlusion-aware: a detection is NOT claimed exclusively by one bubble — a single 2D blob can
+# legitimately be the merged image of several bubbles lined up behind each other in that camera's
+# view. Ghost rejection comes from requiring agreement across all 4 cameras plus deduplication
+# (Set) of redundant proposals found via different seed pairs.
+
+# Important: the pairwise seed pair only generates and loosely prunes candidates (seed_gate,
+# dist_gate) — it does NOT decide acceptance. A candidate is only accepted if the *actual* n-ray
+# triangulation (triangulate_rays, the same function you use downstream) reprojects within
+# accept_gate of every one of its 4 detections. Gating on the pairwise seed point instead of the
+# final fit is what let inconsistent (ghost) tuples through before: passing a 2-camera check does
+# not guarantee the joint 4-camera least-squares point is still close to all 4 detections.
+
+# Tune accept_gate empirically: compute `err` for all full candidates unfiltered, histogram it —
+# true matches should cluster near your detection noise level (up to ~bubble radius/2–3), ghosts
+# spread much wider. Pick accept_gate near the valley between the two.
+# """
+# function match_bubbles(midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}}, frameind::Int, theta;
+#                         seed_gate=15.0f0, accept_gate=15.0f0, dist_gate=1e-2)
+#     ncams  = length(midpoints_per_camera_per_frame) # assumed 4 below (NTuple{4,Int})
+#     points = [midpoints_per_camera_per_frame[c][frameind] for c in 1:ncams]
+#     rays   = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in points[c]] for c in 1:ncams]
+#     trees  = [KDTree(points[c]) for c in 1:ncams]
+
+#     accepted = Set{NTuple{4,Int}}()
+
+#     for a in 1:ncams, b in a+1:ncams, i in eachindex(rays[a]), j in eachindex(rays[b])
+#         p3d, d = mean_point_and_distance(rays[a][i], rays[b][j])
+#         abs(d) > dist_gate && continue
+
+#         tup = zeros(Int, ncams)
+#         tup[a] = i; tup[b] = j
+#         for c in setdiff(1:ncams, (a, b))
+#             idx, dist = knn(trees[c], project_point_onto_image_plane(p3d, c, theta), 1)
+#             dist[1] < seed_gate && (tup[c] = idx[1])
+#         end
+#         any(==(0), tup) && continue
+
+#         # reject based on mean reprojection
+#         refined = triangulate_rays([rays[c][tup[c]] for c in 1:ncams])
+#         err = maximum(norm(project_point_onto_image_plane(refined, c, theta) - points[c][tup[c]]) for c in 1:ncams)
+#         err > accept_gate && continue
+
+#         push!(accepted, Tuple(tup))
+#     end
+
+#     return collect(accepted)
+# end
+
+# usage over the full dataset (Vector{Vector{Vector{SVector{2,Float32}}}}, cam -> frame -> points):
+#
+# nframes = length(midpoints_per_camera_per_frame[1])
+# matches_per_frame = Vector{Vector{NTuple{4,Int}}}(undef, nframes)
+# Threads.@threads for f in 1:nframes
+#     frame_midpoints = [midpoints_per_camera_per_frame[c][f] for c in 1:4]
+#     matches_per_frame[f] = match_bubbles(frame_midpoints, theta)
+# end
+
+function triangulate_associations(
+    midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}},
+    accepted::Vector{NTuple{4, Int64}},
+    frameind::Int,
+    theta)::Vector{SVector{3,Float32}}
+    # return [triangulate_rays(
+    #     [waterray_from_camera(midpoints_per_camera_per_frame[c][frameind][midpointind]..., theta, c, 1.0, 1.33) for (c, midpointind) in enumerate(tup) if midpointind != 0]
+    # ) for tup in accepted if all(!=(0), tup)]
+    return [triangulate_rays(
+        [waterray_from_camera(midpoints_per_camera_per_frame[c][frameind][midpointind]..., theta, c, 1.0, 1.33) for (c, midpointind) in enumerate(tup) if midpointind != 0]
+    ) for tup in accepted]
+end
+
+# usage over the full dataset (Vector{Vector{Vector{SVector{2,Float32}}}}, cam -> frame -> points):
+#
+# nframes = length(midpoints_per_camera_per_frame[1])
+# matches_per_frame = Vector{Vector{NTuple{4,Int}}}(undef, nframes)
+# Threads.@threads for f in 1:nframes
+#     frame_midpoints = [midpoints_per_camera_per_frame[c][f] for c in 1:4]
+#     matches_per_frame[f] = match_bubbles(frame_midpoints, theta)
+# end
+
+function match_bubbles(midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}}, frameind::Int, theta;
+                        seed_gate=15.0f0, accept_gate=10.0f0, dist_gate=3e-3, min_views=3)
+    ncams  = length(midpoints_per_camera_per_frame) # assumed 4 below (NTuple{4,Int})
+    points = [midpoints_per_camera_per_frame[c][frameind] for c in 1:ncams]
+    rays   = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in points[c]] for c in 1:ncams]
+    trees  = [KDTree(points[c]) for c in 1:ncams]
+ 
+    candidates = Dict{NTuple{4,Int}, Float32}() # tuple => reprojection error (deduped)
+ 
+    for a in 1:ncams, b in a+1:ncams, i in eachindex(rays[a]), j in eachindex(rays[b])
+        p3d, d = mean_point_and_distance(rays[a][i], rays[b][j])
+        abs(d) > dist_gate && continue                     # cheap pre-filter, generous
+ 
+        tup = zeros(Int, ncams)
+        tup[a] = i; tup[b] = j
+        for c in setdiff(1:ncams, (a, b))
+            idx, dist = knn(trees[c], project_point_onto_image_plane(p3d, c, theta), 1)
+            dist[1] < seed_gate && (tup[c] = idx[1])        # cheap pre-filter, generous
+        end
+        count(!=(0), tup) < min_views && continue
+ 
+        used_cams = findall(!=(0), tup)
+        refined   = triangulate_rays([rays[c][tup[c]] for c in used_cams])
+        err       = maximum(norm(project_point_onto_image_plane(refined, c, theta) - points[c][tup[c]]) for c in used_cams)
+        err > accept_gate && continue
+ 
+        key = Tuple(tup)
+        candidates[key] = min(err, get(candidates, key, Inf32))
+    end
+ 
+    order = sort(collect(keys(candidates)), by = tup -> (-count(!=(0), tup), candidates[tup]))
+    used  = [falses(length(points[c])) for c in 1:ncams]
+    accepted = NTuple{4,Int}[]
+    for tup in order
+        any(tup[c] != 0 && used[c][tup[c]] for c in 1:ncams) && continue
+        for c in 1:ncams
+            tup[c] != 0 && (used[c][tup[c]] = true)
+        end
+        push!(accepted, tup)
+    end
+    return accepted
+end
+
+
 function visualise_tracks(imagefilename, tracks)
     image = transpose(load(imagefilename)[1:1600, :])
 
@@ -511,6 +739,7 @@ function triangluationtest()
     lines!(ax4, epipolar_curve(track2.second.history[1]..., lengths, 2, 4, theta))
 
     points1 = midpoints_per_camera_per_frame[1][1]
+    points2 = midpoints_per_camera_per_frame[2][1]
     points3 = midpoints_per_camera_per_frame[3][1]
     points4 = midpoints_per_camera_per_frame[4][1]
     scatter!(ax1, points1, color=:green, alpha=0.4)
@@ -569,4 +798,87 @@ function triangluationtest()
     scatter!(ax2, p2, color=:yellow)
     scatter!(ax3, p3, color=:yellow)
     scatter!(ax4, p4, color=:yellow)
+
+    points1, points2, points3, points4 = midpoints_per_camera_per_frame[1][1], midpoints_per_camera_per_frame[2][1], midpoints_per_camera_per_frame[3][1], midpoints_per_camera_per_frame[4][1]
+    scatter!(ax1, points1, color=:green, alpha=0.4)
+    scatter!(ax2, points2, color=:green, alpha=0.4)
+    scatter!(ax3, points3, color=:green, alpha=0.4)
+    scatter!(ax4, points4, color=:green, alpha=0.4)
+
+    # accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta; dist_gate=3e-3, reproj_gate=10.0f0)
+    # accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta; seed_gate=20.0f0, accept_gate=10.0f0, dist_gate=3e-3)
+    accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta)
+    pointcloud = triangulate_associations(midpoints_per_camera_per_frame, accepted, 1, theta)
+    on_cam1 = project_pointcloud_onto_image_plane(pointcloud, 1, theta)
+    on_cam2 = project_pointcloud_onto_image_plane(pointcloud, 2, theta)
+    on_cam3 = project_pointcloud_onto_image_plane(pointcloud, 3, theta)
+    on_cam4 = project_pointcloud_onto_image_plane(pointcloud, 4, theta)
+    scatter!(ax1, on_cam1, color=:blue)
+    scatter!(ax2, on_cam2, color=:blue)
+    scatter!(ax3, on_cam3, color=:blue)
+    scatter!(ax4, on_cam4, color=:blue)
+
+    a = accepted[6]
+    scatter!(ax1, points1[a[1]])
+    scatter!(ax2, points2[a[2]])
+    scatter!(ax3, points3[a[3]])
+    scatter!(ax4, points4[a[4]])
+    point3d = triangulate_rays(
+        [
+            waterray_from_camera(
+            midpoints_per_camera_per_frame[c][frameind][midpointind]..., theta, c, 1.0, 1.33) for (c, midpointind) in enumerate(a) if midpointind != 0
+        ]
+    )
+    # red: projected point 
+    scatter!(ax1, project_point_onto_image_plane(point3d, 1, theta), color=:red)
+    scatter!(ax2, project_point_onto_image_plane(point3d, 2, theta), color=:red)
+    scatter!(ax3, project_point_onto_image_plane(point3d, 3, theta), color=:red)
+    scatter!(ax4, project_point_onto_image_plane(point3d, 4, theta), color=:red)
+
+    p2 = project_point_onto_image_plane(point3d, 2, theta)
+end
+
+
+function visualize_ray_conditioning(midpoints_per_camera_per_frame, frameind::Int, theta,
+                                     selcam::Int, selidx::Int;
+                                     show_gate=1e-3, tlengths=0.0:0.01:0.5)
+    ncams  = length(midpoints_per_camera_per_frame)
+    points = [midpoints_per_camera_per_frame[c][frameind] for c in 1:ncams]
+    rays   = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in points[c]] for c in 1:ncams]
+    selray = rays[selcam][selidx]
+    colors = Dict(zip(setdiff(1:ncams, (selcam,)), (:red, :green, :blue)))
+ 
+    fig = Figure()
+    ax  = Makie.Axis(fig[1, 1], aspect = DataAspect(), xlabel = "x", ylabel = "y",
+                      title = "cam $selcam / det $selidx — ray conditioning (x-y projection)")
+ 
+    trace(ray) = ([(ray.p + t * ray.n)[1] for t in tlengths], [(ray.p + t * ray.n)[2] for t in tlengths])
+    lines!(ax, trace(selray)..., color = :black, linewidth = 3, label = "selected")
+ 
+    epicamidx1 = (selcam + 1) % 4 + 1
+    epiimg1 = Makie.Axis(fig[2, 2], aspect = DataAspect(), yreversed = true, title="cam $epicamidx1")
+    image!(epiimg1, transpose(images[epicamidx1]), uv_transform =:flip_y)
+    lines!(epiimg1, epipolar_curve(points[selcam][selidx]..., 0.0:0.01:0.5, selcam, epicamidx1, theta))
+    scatter!(epiimg1, points[epicamidx1], color=:green, alpha=0.4)
+    epicamidx2 = (selcam) % 4 + 1
+    epiimg2 = Makie.Axis(fig[2, 1], aspect = DataAspect(), yreversed = true, title="cam $epicamidx2")
+    image!(epiimg2, transpose(images[epicamidx2]), uv_transform =:flip_y)
+    lines!(epiimg2, epipolar_curve(points[selcam][selidx]..., 0.0:0.01:0.5, selcam, epicamidx2, theta))
+    scatter!(epiimg2, points[epicamidx2], color=:green, alpha=0.4)
+
+    for (c, col) in colors, (idx, ray) in enumerate(rays[c])
+        p3d, d = mean_point_and_distance(selray, ray)
+        abs(d) > show_gate && continue
+        lines!(ax, trace(ray)..., color = col, alpha = 0.35)
+        c == epicamidx1 && scatter!(epiimg1, project_point_onto_image_plane(p3d, epicamidx1, theta))
+        scatter!(ax, [p3d[1]], [p3d[2]], color = col, markersize = 8)
+    end
+    axislegend(ax)
+
+    aximg = Makie.Axis(fig[1, 2], aspect = DataAspect(), yreversed = true, title="cam $selcam - selected ray")
+    image!(aximg, transpose(images[selcam]), uv_transform =:flip_y)
+    scatter!(aximg, points[selcam], color=:green, alpha=0.4)
+    scatter!(aximg, points[selcam][selidx], color=:red)
+    
+    fig
 end

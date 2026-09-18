@@ -8,7 +8,7 @@ using FileIO
 
 include("calibration.jl")
 
-function load_midpoints(filenames::Vector{String})
+function load_midpoints(filenames::Vector{String}; roi=nothing)
     parsed_points = [JSON.parsefile(f, Vector{Vector{SVector{2,Float32}}}) for f in filenames]
     return map(parsed_points) do camera
         map(camera) do frame
@@ -84,6 +84,10 @@ function reconstruct_refraction_point_from_start_end_points(p1::SVector{3,T}, p2
 
     dist1::T = norm(pxc - p1)   # distance of camera from interface plane
     dist2::T = norm(pxp - p2)   # distance of point  from interface plane
+
+    dist1 ≈ zero(T) && return pxc
+    dist2 ≈ zero(T) && return pxp
+
     projected_connection = pxp - pxc # onto the interface plane
     projected_distance::T = norm(projected_connection) # cameraposition -> point distance projected onto interface plane
 
