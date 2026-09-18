@@ -52,11 +52,23 @@ function initial_guess()
     R_I3 = MRP(R_Id * R_d3)
     R_I4 = MRP(R_Id * R_d4)
 
-    camera1pose = @SMatrix[R_I1.x R_I1.y R_I1.z -0.776121 0.385141 0]
-    camera2to4poses = @SMatrix[
-        R_I2.x R_I2.y R_I2.z -0.717733 -0.391225 0;
-        R_I3.x R_I3.y R_I3.z -0.445777 -0.763216 0;
-        R_I4.x R_I4.y R_I4.z 0.423439 -0.715978 0
+    # camera1pose = @SMatrix[R_I1.x R_I1.y R_I1.z -0.776121 0.385141 0]
+    # camera2to4poses = @SMatrix[
+    #     R_I2.x R_I2.y R_I2.z -0.717733 -0.391225 0;
+    #     R_I3.x R_I3.y R_I3.z -0.445777 -0.763216 0;
+    #     R_I4.x R_I4.y R_I4.z 0.423439 -0.715978 0
+    # ]
+    camerapositions = @SMatrix[
+        -0.776121 0.385141  0;
+        -0.717733 -0.391225 0;
+        -0.445777 -0.763216 0;
+        0.423439 -0.715978  0;
+    ]
+    camerarotations = @SMatrix[
+        R_I1.x R_I1.y R_I1.z;
+        R_I2.x R_I2.y R_I2.z;
+        R_I3.x R_I3.y R_I3.z;
+        R_I4.x R_I4.y R_I4.z;
     ]
     # meandiff = [0.00702467  0.00852816  -0.00385455  0.102572  -0.144641  -0.015324] # cameraposes - sol.u.cameraposes
     # camera2to4poses -= [1; 1; 1] * meandiff
@@ -85,11 +97,13 @@ function initial_guess()
         interface34=(n=[0, -1, 0], d=-0.53 / 2)
     )
     free_parameters = ComponentArray(
-        cameraposes=camera2to4poses,
+        # cameraposes=camera2to4poses,
+        camerarotations=camerarotations,
         # cameraparameters=cameraparameters_free,
     )
     fixed_parameters = ComponentArray(
-        cameraposes=camera1pose,
+        # cameraposes=camera1pose,
+        camerapositions=camerapositions,
         cameraparameters=cameraparameters_fixed,
         interfaces=interfaces,
     )
@@ -116,7 +130,8 @@ function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
         for i = 1:4
     ]
     theta = ComponentArray(
-        cameraposes=vcat(fixed_parameters.cameraposes, free_parameters.cameraposes),
+        # cameraposes=vcat(fixed_parameters.cameraposes, free_parameters.cameraposes),
+        cameraposes=hcat(free_parameters.camerarotations, fixed_parameters.camerapositions),
         cameraparameters=cameraparameters,
         interfaces=fixed_parameters.interfaces,
     )

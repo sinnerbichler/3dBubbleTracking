@@ -343,6 +343,53 @@ function associate_tracks(tracks_per_camera::Vector{Dict{Int, Track}}, theta)
     end # tracks2
 end
 
+function match_tracks(tracks_per_camera::Vector{Dict{Int,Track}}, midpoints_per_camera_per_frame, theta, frames;
+                       seed_gate=15.0f0, accept_gate=5.0f0, dist_gate=2e-3,
+                       track_gate=3.0f0, min_votes=2)
+    ncams = length(tracks_per_camera)
+    ids   = [collect(keys(tracks_per_camera[c])) for c in 1:ncams]
+ 
+    votes = Dict{NTuple{4,Int}, Int}()
+ 
+    for f in frames
+        accepted = match_bubbles(midpoints_per_camera_per_frame, f, theta;
+                                  seed_gate, accept_gate, dist_gate, min_views=4)
+        isempty(accepted) && continue
+ 
+        trees = [KDTree([get(tracks_per_camera[c][id].history, f - tracks_per_camera[c][id].start_frame + 1,
+                              SVector{2,Float32}(-1f4, -1f4)) for id in ids[c]]) for c in 1:ncams]
+ 
+        for tup in accepted
+            trackvote = ntuple(ncams) do c
+                idx, dist = knn(trees[c], midpoints_per_camera_per_frame[c][f][tup[c]], 1)
+                dist[1] < track_gate ? ids[c][idx[1]] : 0
+            end
+            any(==(0), trackvote) && continue
+            votes[trackvote] = get(votes, trackvote, 0) + 1
+        end
+    end
+ 
+    return Dict(k => v for (k, v) in votes if v >= min_votes)
+end
+
+function triangulate_track_group(tracks::Vector{Track}, caminds::Vector{Int}, theta)
+    starts = [t.start_frame for t in tracks]
+    ranges = [s:(s + length(t.history) - 1) for (s, t) in zip(starts, tracks)]
+    common = reduce(intersect, ranges)
+    isempty(common) && return SVector{3,Float32}[], Float32[], 0:0
+ 
+    points3d = Vector{SVector{3,Float32}}(undef, length(common))
+    errs     = Vector{Float32}(undef, length(common))
+    for (i, f) in enumerate(common)
+        pos  = [tracks[k].history[f - starts[k] + 1] for k in eachindex(tracks)]
+        rays = [waterray_from_camera(pos[k]..., theta, caminds[k], 1.0, 1.33) for k in eachindex(tracks)]
+        p3d  = triangulate_rays(rays)
+        errs[i] = maximum(norm(project_point_onto_image_plane(p3d, caminds[k], theta) - pos[k]) for k in eachindex(tracks))
+        points3d[i] = p3d
+    end
+    return points3d, errs, common
+end
+
 function GLMakie.lines!(ax, track::Track; kwargs...)
     GLMakie.lines!(ax, track.history, kwargs...)
 end
@@ -512,15 +559,6 @@ end
 #     return collect(accepted)
 # end
 
-# usage over the full dataset (Vector{Vector{Vector{SVector{2,Float32}}}}, cam -> frame -> points):
-#
-# nframes = length(midpoints_per_camera_per_frame[1])
-# matches_per_frame = Vector{Vector{NTuple{4,Int}}}(undef, nframes)
-# Threads.@threads for f in 1:nframes
-#     frame_midpoints = [midpoints_per_camera_per_frame[c][f] for c in 1:4]
-#     matches_per_frame[f] = match_bubbles(frame_midpoints, theta)
-# end
-
 function triangulate_associations(
     midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}},
     accepted::Vector{NTuple{4, Int64}},
@@ -534,17 +572,8 @@ function triangulate_associations(
     ) for tup in accepted]
 end
 
-# usage over the full dataset (Vector{Vector{Vector{SVector{2,Float32}}}}, cam -> frame -> points):
-#
-# nframes = length(midpoints_per_camera_per_frame[1])
-# matches_per_frame = Vector{Vector{NTuple{4,Int}}}(undef, nframes)
-# Threads.@threads for f in 1:nframes
-#     frame_midpoints = [midpoints_per_camera_per_frame[c][f] for c in 1:4]
-#     matches_per_frame[f] = match_bubbles(frame_midpoints, theta)
-# end
-
 function match_bubbles(midpoints_per_camera_per_frame::Vector{Vector{Vector{SVector{2, Float32}}}}, frameind::Int, theta;
-                        seed_gate=15.0f0, accept_gate=10.0f0, dist_gate=3e-3, min_views=3)
+                        seed_gate=15.0f0, accept_gate=10.0f0, dist_gate=3e-3, min_views=4)
     ncams  = length(midpoints_per_camera_per_frame) # assumed 4 below (NTuple{4,Int})
     points = [midpoints_per_camera_per_frame[c][frameind] for c in 1:ncams]
     rays   = [[waterray_from_camera(pt..., theta, c, 1.0, 1.33) for pt in points[c]] for c in 1:ncams]
@@ -818,11 +847,11 @@ function triangluationtest()
     scatter!(ax3, on_cam3, color=:blue)
     scatter!(ax4, on_cam4, color=:blue)
 
-    a = accepted[6]
-    scatter!(ax1, points1[a[1]])
-    scatter!(ax2, points2[a[2]])
-    scatter!(ax3, points3[a[3]])
-    scatter!(ax4, points4[a[4]])
+    a = accepted[65]
+    scatter!(ax1, points1[a[1]], color=:red)
+    scatter!(ax2, points2[a[2]], color=:red)
+    scatter!(ax3, points3[a[3]], color=:red)
+    scatter!(ax4, points4[a[4]], color=:red)
     point3d = triangulate_rays(
         [
             waterray_from_camera(
@@ -836,6 +865,29 @@ function triangluationtest()
     scatter!(ax4, project_point_onto_image_plane(point3d, 4, theta), color=:red)
 
     p2 = project_point_onto_image_plane(point3d, 2, theta)
+
+
+    # track association with strict 3d triangulation
+    track_votes = match_tracks(tracks_per_camera, midpoints_per_camera_per_frame, theta, 1:50)
+    trackidslist = [(2071, 1154, 2765, 122),
+        (172, 133, 557, 183),
+        (380, 301, 364, 202),
+        (646, 160, 1315, 8),
+        (608, 887, 55, 241),
+        (1582, 2436, 109, 75),
+        (111, 2376, 3101, 157),
+        (372, 547, 343, 429),
+        (445, 3, 411, 474),
+        (450, 296, 197, 484)];
+    for trackids in trackidslist
+        tracks = [tracks_per_camera[c][i] for (c, i) in enumerate(trackids)];
+        track3d = triangulate_track_group(tracks, [1, 2, 3, 4], theta);
+        # render 3d track onto 4 images
+        for (ax, camind) in zip([ax1, ax2, ax3, ax4], 1:4)
+            lines!(ax, project_pointcloud_onto_image_plane(track3d[1], camind, theta), color=:red)
+            lines!(ax, tracks[camind].history, color=:green)
+        end
+    end
 end
 
 
@@ -860,7 +912,7 @@ function visualize_ray_conditioning(midpoints_per_camera_per_frame, frameind::In
     image!(epiimg1, transpose(images[epicamidx1]), uv_transform =:flip_y)
     lines!(epiimg1, epipolar_curve(points[selcam][selidx]..., 0.0:0.01:0.5, selcam, epicamidx1, theta))
     scatter!(epiimg1, points[epicamidx1], color=:green, alpha=0.4)
-    epicamidx2 = (selcam) % 4 + 1
+    epicamidx2 = selcam % 4 + 1
     epiimg2 = Makie.Axis(fig[2, 1], aspect = DataAspect(), yreversed = true, title="cam $epicamidx2")
     image!(epiimg2, transpose(images[epicamidx2]), uv_transform =:flip_y)
     lines!(epiimg2, epipolar_curve(points[selcam][selidx]..., 0.0:0.01:0.5, selcam, epicamidx2, theta))
@@ -871,6 +923,7 @@ function visualize_ray_conditioning(midpoints_per_camera_per_frame, frameind::In
         abs(d) > show_gate && continue
         lines!(ax, trace(ray)..., color = col, alpha = 0.35)
         c == epicamidx1 && scatter!(epiimg1, project_point_onto_image_plane(p3d, epicamidx1, theta))
+        c == epicamidx2 && scatter!(epiimg2, project_point_onto_image_plane(p3d, epicamidx2, theta))
         scatter!(ax, [p3d[1]], [p3d[2]], color = col, markersize = 8)
     end
     axislegend(ax)
