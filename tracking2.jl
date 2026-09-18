@@ -466,10 +466,10 @@ function test_state()
     end
 
     # lines!(ax2, tracks_per_camera[2], alpha = 0.2)
-    # lines!(ax1, tracks_per_camera[1])
-    # lines!(ax2, tracks_per_camera[2])
-    # lines!(ax3, tracks_per_camera[3])
-    # lines!(ax4, tracks_per_camera[4])
+    lines!(ax1, tracks_per_camera[1])
+    lines!(ax2, tracks_per_camera[2])
+    lines!(ax3, tracks_per_camera[3])
+    lines!(ax4, tracks_per_camera[4])
 
     track2id = 6
     track2 = Pair(track2id, tracks2[track2id])
@@ -504,16 +504,20 @@ function test_state()
     interesting_track = tracks3[2703]
     
 
-    # project spargercenter onto 1 and 3
-    r2 = waterray_from_camera(100, 800, theta, 2, 1.0, 1.33)
-    r4 = waterray_from_camera(45, 750, theta, 4, 1.0, 1.33)
-    r2 = waterray_from_camera(100, 670, theta, 2, 1.0, 1.33)
-    r4 = waterray_from_camera(45, 750, theta, 4, 1.0, 1.33)
+    # project distinct onto 1 and 3
+    # p2 = (100, 800)
+    # p4 = (45, 750)
+    p2 = (1435, 342)
+    p4 = (1338, 852)
+    r2 = waterray_from_camera(p2..., theta, 2, 1.0, 1.33)
+    r4 = waterray_from_camera(p4..., theta, 4, 1.0, 1.33)
     mean_point, dist = mean_point_and_distance(r2, r4)
     p1 = project_point_onto_image_plane(mean_point, 1, theta)
     p3 = project_point_onto_image_plane(mean_point, 3, theta)
     scatter!(ax1, p1, color=:red)
+    scatter!(ax2, p2, color=:red)
     scatter!(ax3, p3, color=:red)
+    scatter!(ax4, p4, color=:red)
 
     # lines!(ax2, tracks2, transpose=true)
     # lines!(ax2, track2.second)
