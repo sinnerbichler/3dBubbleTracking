@@ -756,6 +756,12 @@ end
 
 function triangluationtest()
     tracks1, tracks2, tracks3, tracks4 = tracks_per_camera
+    frameind = 1
+
+    points1 = midpoints_per_camera_per_frame[1][frameind]
+    points2 = midpoints_per_camera_per_frame[2][frameind]
+    points3 = midpoints_per_camera_per_frame[3][frameind]
+    points4 = midpoints_per_camera_per_frame[4][frameind]
 
     track2id = 9
     track2 = Pair(track2id, tracks2[track2id])
@@ -767,10 +773,6 @@ function triangluationtest()
     lines!(ax3, epipolar_curve(track2.second.history[1]..., lengths, 2, 3, theta))
     lines!(ax4, epipolar_curve(track2.second.history[1]..., lengths, 2, 4, theta))
 
-    points1 = midpoints_per_camera_per_frame[1][1]
-    points2 = midpoints_per_camera_per_frame[2][1]
-    points3 = midpoints_per_camera_per_frame[3][1]
-    points4 = midpoints_per_camera_per_frame[4][1]
     scatter!(ax1, points1, color=:green, alpha=0.4)
     scatter!(ax3, points3, color=:green, alpha=0.4)
     scatter!(ax4, points4, color=:green, alpha=0.4)
@@ -836,7 +838,15 @@ function triangluationtest()
 
     # accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta; dist_gate=3e-3, reproj_gate=10.0f0)
     # accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta; seed_gate=20.0f0, accept_gate=10.0f0, dist_gate=3e-3)
-    accepted = match_bubbles(midpoints_per_camera_per_frame, 1, theta)
+    accepted = match_bubbles(
+        midpoints_per_camera_per_frame,
+        1, # frameind
+        theta;
+        seed_gate=15.0f0,
+        accept_gate=10.0f0,
+        dist_gate=3e-3,
+        min_views=4
+    )
     pointcloud = triangulate_associations(midpoints_per_camera_per_frame, accepted, 1, theta)
     on_cam1 = project_pointcloud_onto_image_plane(pointcloud, 1, theta)
     on_cam2 = project_pointcloud_onto_image_plane(pointcloud, 2, theta)
@@ -848,10 +858,10 @@ function triangluationtest()
     scatter!(ax4, on_cam4, color=:blue)
 
     a = accepted[65]
-    scatter!(ax1, points1[a[1]], color=:red)
-    scatter!(ax2, points2[a[2]], color=:red)
-    scatter!(ax3, points3[a[3]], color=:red)
-    scatter!(ax4, points4[a[4]], color=:red)
+    scatter!(ax1, points1[a[1]], color=:green)
+    scatter!(ax2, points2[a[2]], color=:green)
+    scatter!(ax3, points3[a[3]], color=:green)
+    scatter!(ax4, points4[a[4]], color=:green)
     point3d = triangulate_rays(
         [
             waterray_from_camera(
@@ -864,21 +874,23 @@ function triangluationtest()
     scatter!(ax3, project_point_onto_image_plane(point3d, 3, theta), color=:red)
     scatter!(ax4, project_point_onto_image_plane(point3d, 4, theta), color=:red)
 
-    p2 = project_point_onto_image_plane(point3d, 2, theta)
+    # p2 = project_point_onto_image_plane(point3d, 2, theta)
 
 
     # track association with strict 3d triangulation
     track_votes = match_tracks(tracks_per_camera, midpoints_per_camera_per_frame, theta, 1:50)
-    trackidslist = [(2071, 1154, 2765, 122),
-        (172, 133, 557, 183),
-        (380, 301, 364, 202),
-        (646, 160, 1315, 8),
-        (608, 887, 55, 241),
-        (1582, 2436, 109, 75),
-        (111, 2376, 3101, 157),
-        (372, 547, 343, 429),
-        (445, 3, 411, 474),
-        (450, 296, 197, 484)];
+    # trackidslist = [(2071, 1154, 2765, 122),
+    #     (172, 133, 557, 183),
+    #     (380, 301, 364, 202),
+    #     (646, 160, 1315, 8),
+    #     (608, 887, 55, 241),
+    #     (1582, 2436, 109, 75),
+    #     (111, 2376, 3101, 157),
+    #     (372, 547, 343, 429),
+    #     (445, 3, 411, 474),
+    #     (450, 296, 197, 484)];
+    good_track_votes = filter(p->p.second>2, track_votes)
+    trackidslist = map(p->p.first, collect(pairs(good_track_votes)))
     for trackids in trackidslist
         tracks = [tracks_per_camera[c][i] for (c, i) in enumerate(trackids)];
         track3d = triangulate_track_group(tracks, [1, 2, 3, 4], theta);

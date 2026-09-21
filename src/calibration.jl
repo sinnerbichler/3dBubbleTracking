@@ -72,24 +72,23 @@ function initial_guess()
     ]
     # meandiff = [0.00702467  0.00852816  -0.00385455  0.102572  -0.144641  -0.015324] # cameraposes - sol.u.cameraposes
     # camera2to4poses -= [1; 1; 1] * meandiff
-    defaultcameraparameters_free = (
-    # skew = 0.0,
-    )
-
-    pixel_size = 10e-6 # 10micrometers
     lens_focal_length = 100e-3
+    pixel_size = 8.5e-6 # changed from 10e-6
     defaultcameraparameters_fixed = (
-        k1=0.0,
-        k2=0.0,
-        p1=0.0,
-        p2=0.0,
-        k3=0.0,
         fx=lens_focal_length / pixel_size,
         fy=lens_focal_length / pixel_size,
         cx=1280.0, # cx and cy are the pixel coordinates
         cy=800.0,  # of the image part, without the bottom
     )
-    # cameraparameters_free = [defaultcameraparameters_free for _ in 1:4]
+    defaultcameraparameters_free = (
+        k1=0.0,
+        k2=0.0,
+        p1=0.0,
+        p2=0.0,
+        k3=0.0,
+    )
+
+    cameraparameters_free = [defaultcameraparameters_free for _ in 1:4]
     cameraparameters_fixed = [defaultcameraparameters_fixed for _ in 1:4]
 
     interfaces = (
@@ -99,7 +98,7 @@ function initial_guess()
     free_parameters = ComponentArray(
         # cameraposes=camera2to4poses,
         camerarotations=camerarotations,
-        # cameraparameters=cameraparameters_free,
+        cameraparameters=cameraparameters_free,
     )
     fixed_parameters = ComponentArray(
         # cameraposes=camera1pose,
@@ -117,11 +116,11 @@ end
 function merge_free_and_fixed_parameters(free_parameters, fixed_parameters)
     cameraparameters = [
         (
-            k1=fixed_parameters.cameraparameters[i].k1,
-            k2=fixed_parameters.cameraparameters[i].k2,
-            p1=fixed_parameters.cameraparameters[i].p1,
-            p2=fixed_parameters.cameraparameters[i].p2,
-            k3=fixed_parameters.cameraparameters[i].k3,
+            k1=free_parameters.cameraparameters[i].k1,
+            k2=free_parameters.cameraparameters[i].k2,
+            p1=free_parameters.cameraparameters[i].p1,
+            p2=free_parameters.cameraparameters[i].p2,
+            k3=free_parameters.cameraparameters[i].k3,
             fx=fixed_parameters.cameraparameters[i].fx,
             fy=fixed_parameters.cameraparameters[i].fy,
             cx=fixed_parameters.cameraparameters[i].cx,
@@ -244,7 +243,8 @@ end
 function refract_ray(ray::Ray, interface::Interface, n1::Float64, n2::Float64)::Ray
     # apply Snellius' Law
     cosalpha = -dot(interface.n, ray.n)
-    @assert(cosalpha > 0)
+    # @assert(cosalpha > 0)
+    cosalpha = max(cosalpha, 1e-6)
 
     ratio = n1 / n2 # ratio of indices of refraction
     # refracted normalized direction vector
@@ -325,7 +325,7 @@ end
 # boardimage = board.generateImage((1000, 3500))
 function create_charuco_detector_and_board()
     squares_x, squares_y = 8, 22
-    printing_scale_factor::Float64 = 2745e-3 / 280
+    printing_scale_factor::Float64 = 274.5 / 280
     square_len = 14e-3 * printing_scale_factor
     marker_len = 10e-3 * printing_scale_factor
 
@@ -337,6 +337,19 @@ function create_charuco_detector_and_board()
     charuco_detector = cv2.aruco.CharucoDetector(board, charuco_params, detector_params)
 
     return charuco_detector, board
+end
+
+const CHARUCO_SQUARES_X = 8
+const CHARUCO_SQUARE_LENGTH = 13.725e-3
+
+function charuco_corner_position(id::Int, squares_x::Int=CHARUCO_SQUARES_X, square_len::Float64=CHARUCO_SQUARE_LENGTH)::SVector{2,Float64}
+    ncols = squares_x - 1
+    row, col = divrem(id-1, ncols)
+    return SVector(Float64(col + 1) * square_len, Float64(row + 1) * square_len)
+end
+
+function board_distance(ida::Int, idb::Int, squares_x::Int=CHARUCO_SQUARES_X, square_len::Float64=CHARUCO_SQUARE_LENGTH)
+    return norm(charuco_corner_position(ida, squares_x, square_len) - charuco_corner_position(idb, squares_x, square_len))
 end
 
 # this function really does not work! the refraction is wayyy to great, and
@@ -620,7 +633,87 @@ function residualsv2(free_parameters, p)
     end
 
     @assert eltype(residuals) == T
-    return residuals
+
+    distortion_ridge = T[]
+    for cp in free_parameters.cameraparameters
+        for (k, σ) in zip([cp.k1, cp.k2, cp.p1, cp.p2, cp.k3], [0.05, 0.02, 0.002, 0.002, 0.01])
+            push!(distortion_ridge, k / σ)
+        end
+    end
+
+    return vcat(residuals, distortion_ridge)
+    # return residuals
+end
+
+function residualsv3(free_parameters, p)
+    theta = merge_free_and_fixed_parameters(free_parameters, p.fixed_parameters)
+    T = eltype(free_parameters)
+
+    nair = 1.0
+    nwater = 1.33
+
+    min_distance_edgelengths = 2
+    square_length = 13.725e-3
+    sigma_distance_scaling = 1.0e-3
+    
+    interface12 = Interface{T}(p.fixed_parameters.interfaces.interface12.n, p.fixed_parameters.interfaces.interface12.d)
+    interface34 = Interface{T}(p.fixed_parameters.interfaces.interface34.n, p.fixed_parameters.interfaces.interface34.d)
+
+    residuals = T[]
+    distance_residuals = T[]
+    mindist = min_distance_edgelengths * square_length
+
+    for detectionsquadruple in p.detections_list
+        interesting_marker_ids = Int[]
+        for detections in detectionsquadruple
+            push!(interesting_marker_ids, detections.ids...)
+        end
+        unique!(interesting_marker_ids)
+
+        wellseen_points = Dict{Int,Vector{T}}()  # id -> triangulated point, only ids seen by >=3 cams
+
+        for interesting_marker_id in interesting_marker_ids
+            cameras_to_point_map::Dict{Int,Vector{Float64}} =
+                Dict(i => d.corners[j, :] for (i, d) in enumerate(detectionsquadruple)
+                     for j in findall(==(interesting_marker_id), d.ids))
+
+            waterrays = Vector{Ray{T}}()
+            for (cameraind, detection_pixels) in Base.pairs(cameras_to_point_map)
+                interface = cameraind < 3 ? interface12 : interface34
+                airray = airray_from_camera(detection_pixels..., theta, cameraind)
+                waterray = refract_ray(airray, interface, nair, nwater)
+                push!(waterrays, waterray)
+            end
+
+            push!(residuals, residuals_from_rays(waterrays)...)
+
+            if length(waterrays) >= 3
+                wellseen_points[interesting_marker_id] = triangulate_rays(waterrays)
+            end
+        end
+
+        ids = collect(keys(wellseen_points))
+        for i in 1:length(ids)-1, j in i+1:length(ids)
+            ida, idb = ids[i], ids[j]
+            trueboarddist = board_distance(ida, idb)
+            trueboarddist < mindist && continue
+
+            measureddist = norm(wellseen_points[ida] - wellseen_points[idb])
+            push!(distance_residuals, (measureddist - trueboarddist) / sigma_distance_scaling)
+        end
+    end # detectionsquadruple per frame
+
+    @assert eltype(residuals) == T
+
+    distortion_ridge = T[]
+    for cp in free_parameters.cameraparameters
+        for (k, σ) in zip([cp.k1, cp.k2, cp.p1, cp.p2, cp.k3], [0.05, 0.02, 0.002, 0.002, 0.01])
+            push!(distortion_ridge, k / σ)
+        end
+    end
+
+    return vcat(residuals, distortion_ridge, distance_residuals)
+    # return vcat(residuals, distortion_ridge)
 end
 
 

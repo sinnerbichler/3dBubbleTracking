@@ -387,22 +387,24 @@ function visualise_tracks(imagefilename, tracks)
 end
 
 function test_state()
-    jsonfilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera1midpoints.json"
-    imagefilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera 10000.tif"
-    jsonfilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera3midpoints.json"
-    imagefilename = "/home/simon/mega/masterarbeit/fullrun3_200/Camera30000.tif"
+    casename = "fullrun3_200"
+    casepath = "/home/simon/mega/masterarbeit/" * casename * "/"
+    jsonfilename = casepath * "/Camera1midpoints.json"
+    imagefilename = casepath * "/Camera 10000.tif"
+    jsonfilename = casepath * "/Camera3midpoints.json"
+    imagefilename = casepath * "/Camera30000.tif"
 
-    jsonfilenames = "/home/simon/mega/masterarbeit/fullrun3_200/" .* [
+    jsonfilenames = casepath .* [
         "Camera1midpoints.json",
         "Camera2midpoints.json",
         "Camera3midpoints.json",
         "Camera4midpoints.json",
     ]
 
-    nsteps = 50
+    nsteps = 20
     # midpoints_per_frame = JSON.parsefile(jsonfilename, Vector{Vector{SVector{2,Float32}}})
     midpoints_per_camera_per_frame = load_midpoints(jsonfilenames)
-    tracks = run_tracking(midpoints_per_camera_per_frame[3]; nsteps)
+    # tracks = run_tracking(midpoints_per_camera_per_frame[3]; nsteps)
 
     tracks_per_camera = [
         run_tracking(
@@ -447,7 +449,6 @@ function test_state()
     ]
 
 
-    casepath = "/home/simon/mega/masterarbeit/fullrun3_200/"
     imagefilenames = casepath .* [
         "Camera 10000.tif",
         "Camera 20000.tif",
@@ -504,28 +505,65 @@ function test_state()
     interesting_track = tracks3[2703]
     
 
+    # actual detected marker 107 frame 509 (idex 17 in intersections_list)
+    for (c,l) in enumerate(detections_list[17])
+        println("$c: ids: ", l.ids)
+        122 ∉ l.ids && continue
+        corner = l.corners[findall(i->i==122, l.ids)[1], :]
+        println("$c: corner location: ", corner)
+        if c == 1
+            scatter!(ax1, tuple(corner...))
+        elseif c == 3
+            scatter!(ax3, tuple(corner...))
+        end
+    end
     # project distinct onto 1 and 3
-    # p2 = (100, 800)
-    # p4 = (45, 750)
-    p2 = (1435, 342)
-    p4 = (1338, 852)
+    p2 = (1555.4278564453125, 432.7056579589844)
+    p4 = (1447.7933349609375, 889.6285400390625)
+    p2 = (1436, 340) # middle
+    p4 = (1338, 850)
+    p2 = (2150, 906) # bottom right
+    p4 = (2025, 1100)
+    p2 = (762, 570) # close to sparger
+    p4 = (665, 910)
+    # plot detected markers form frame 509
+    p4 = (2020.05, 489.266) 
+    p2 = (2167.79, 720.824)
+    # p = [1976.08, 583.737]
     r2 = waterray_from_camera(p2..., theta, 2, 1.0, 1.33)
     r4 = waterray_from_camera(p4..., theta, 4, 1.0, 1.33)
     mean_point, dist = mean_point_and_distance(r2, r4)
+    println("dist: $dist")
     p1 = project_point_onto_image_plane(mean_point, 1, theta)
     p3 = project_point_onto_image_plane(mean_point, 3, theta)
-    scatter!(ax1, p1, color=:red)
-    scatter!(ax2, p2, color=:red)
-    scatter!(ax3, p3, color=:red)
-    scatter!(ax4, p4, color=:red)
+    scatter!(ax1, p1)
+    scatter!(ax2, p2)
+    scatter!(ax3, p3)
+    scatter!(ax4, p4)
+
+    # debugging of scale preservation
+    p1 = [17.0, -10.72, -23.17]
+    p2 = [33.0, -16.74, -23.58]
+    p1 = [-26.16, -14.028, -1.252]
+    p2 = [14.813, -16.93, -1.857]
+    p1 = [-27.3, -14.0, 42.9]
+    p2 = [45.7, -17.3, 41.6]
+    norm(p1-p2) # should be close to 13.725mm or a multiple 
 
     # lines!(ax2, tracks2, transpose=true)
     # lines!(ax2, track2.second)
 
     # lines!(ax4, track4.second)
 
+    scatter!(ax1, midpoints_per_camera_per_frame[1][1])
     scatter!(ax2, midpoints_per_camera_per_frame[2][1])
     scatter!(ax3, midpoints_per_camera_per_frame[3][1])
+    scatter!(ax4, midpoints_per_camera_per_frame[4][1])
+
+    scatter!(ax1, midpoints_per_camera_per_frame[1][2])
+    scatter!(ax2, midpoints_per_camera_per_frame[2][2])
+    scatter!(ax3, midpoints_per_camera_per_frame[3][2])
+    scatter!(ax4, midpoints_per_camera_per_frame[4][2])
 
     # individual tracks
     lines!(ax2, tracks_per_camera[2][5])
